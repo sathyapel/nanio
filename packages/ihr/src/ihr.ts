@@ -24,17 +24,33 @@ export interface IngestSection {
 }
 
 export interface RetrieveOptions {
+  /** Semantic search top-N (default 5). */
   limit?: number;
+  /** Number of sections to keep after TF-IDF re-rank (default 3). */
   tfidfLimit?: number;
-  alwaysRunTfidf?: boolean;
+  /**
+   * Custom stopword set passed to TF-IDF tokeniser.
+   * Always merged on top of the LLM-generated or DEFAULT stopwords.
+   */
   stopwords?: Set<string>;
+  /**
+   * When true, calls the configured LLM to:
+   *   1. Detect the primary language of the candidate corpus.
+   *   2. Return a comprehensive, language-specific stopword list.
+   * The LLM-generated words are merged with DEFAULT_STOPWORDS before TF-IDF runs.
+   * This ensures correct stopword handling for any language (French, German, Spanish, etc.)
+   * without requiring manual stopword lists per language.
+   * Default: false (uses DEFAULT_STOPWORDS only).
+   */
+  autoStopwords?: boolean;
 }
 
 export interface RetrieveResponse {
   answer: string;
   context: string;
   retrievedSections: string[];
-  path: 'fast' | 'tfidf';
+  /** Always 'tfidf' — TF-IDF re-rank runs unconditionally as per reference notebook. */
+  path: 'tfidf';
 }
 
 /**
@@ -70,7 +86,7 @@ export const DEFAULT_STOPWORDS = new Set([
 ]);
 
 /**
- * Tokenizes text by lowercasing, converting punctuation to spaces, and removing English stopwords.
+ * Tokenizes text: lowercase → strip punctuation → split → remove stopwords.
  */
 export function tokenize(text: string, stopwords: Set<string> = DEFAULT_STOPWORDS): string[] {
   return text
@@ -81,56 +97,158 @@ export function tokenize(text: string, stopwords: Set<string> = DEFAULT_STOPWORD
 }
 
 /**
- * Calculates TF-IDF scores for full text items relative to query terms.
+ * Generates unigrams + bigrams from a token list.
+ * Equivalent to sklearn TfidfVectorizer(ngram_range=(1, 2)).
+ */
+export function buildNgrams(tokens: string[]): string[] {
+  const result: string[] = [...tokens];
+  for (let i = 0; i < tokens.length - 1; i++) {
+    result.push(`${tokens[i]} ${tokens[i + 1]}`);
+  }
+  return result;
+}
+
+/**
+ * Automatically derives corpus-level stopwords from candidate texts.
  *
- * Performance: O(S·T) where S = sections, T = unique query terms.
- * Each section is tokenized once and stored as a frequency-map + Set,
- * giving O(1) TF lookups (via freq map) and O(1) IDF doc-frequency checks
- * (via Set.has) — replacing the original O(S·M) filter+includes approach.
+ * Any term appearing in >= `threshold` fraction of the candidate documents
+ * is added to the stopword set (merged onto `baseStopwords`).
+ * This mirrors sklearn's max_df behaviour.
+ *
+ * @param texts       - raw text strings for each candidate section
+ * @param threshold   - document-frequency fraction cutoff (default 0.85)
+ * @param baseStopwords - seed stopword set (DEFAULT_STOPWORDS)
+ */
+export function generateCorpusStopwords(
+  texts: string[],
+  threshold: number = 0.85,
+  baseStopwords: Set<string> = DEFAULT_STOPWORDS
+): Set<string> {
+  const N = texts.length;
+  if (N === 0) return new Set(baseStopwords);
+
+  // Count document frequency WITHOUT removing stopwords first, so very common
+  // function words in the corpus that somehow escaped the base list are caught.
+  const df: Record<string, number> = {};
+  for (const text of texts) {
+    // Tokenize with an empty stopword set for df counting
+    const terms = new Set(
+      text
+        .toLowerCase()
+        .replace(/[^\w\s]/g, ' ')
+        .split(/\s+/)
+        .filter(t => t.length > 0)
+    );
+    for (const t of terms) df[t] = (df[t] || 0) + 1;
+  }
+
+  const combined = new Set(baseStopwords);
+  for (const [term, count] of Object.entries(df)) {
+    if (count / N >= threshold) combined.add(term);
+  }
+  return combined;
+}
+
+/**
+ * TF-IDF cosine re-ranking — directly mirrors the reference notebook:
+ *
+ *   corpus      = [query] + section_documents
+ *   vectorizer  = TfidfVectorizer(stop_words supplied, ngram_range=(1,2))
+ *   tfidf_mat   = vectorizer.fit_transform(corpus)     ← IDF over full corpus
+ *   scores      = cosine_similarity(tfidf_mat[0:1], tfidf_mat[1:]).flatten()
+ *
+ * Differences from old tfidfScore:
+ *   - IDF uses the **full** corpus (query + all section docs) — same as sklearn
+ *   - Bigrams are included (ngram_range 1-2)
+ *   - Final cosine similarity on L2-normalised TF-IDF vectors (not raw TF * IDF dot-product)
+ *
+ * @param query    - user query string
+ * @param sections - candidate sections with { section_id, text }
+ * @param stopwords - stopword set (DEFAULT_STOPWORDS or corpus-generated)
+ */
+export function tfidfCosineScore(
+  query: string,
+  sections: { section_id: string; text: string }[],
+  stopwords: Set<string> = DEFAULT_STOPWORDS
+): { section_id: string; score: number }[] {
+  if (sections.length === 0) return [];
+
+  // Build corpus: doc[0] = query, doc[1..n] = section texts
+  const allTexts = [query, ...sections.map(s => s.text)];
+
+  // Tokenize each document and expand to unigrams + bigrams
+  const tokenized: string[][] = allTexts.map(t => buildNgrams(tokenize(t, stopwords)));
+
+  // Build global vocabulary (insertion-order stable)
+  const vocab = new Map<string, number>();
+  for (const toks of tokenized) {
+    for (const t of toks) {
+      if (!vocab.has(t)) vocab.set(t, vocab.size);
+    }
+  }
+
+  const V = vocab.size;
+  const N = tokenized.length; // includes query
+
+  // Document frequency: how many documents contain each term
+  const df = new Float64Array(V);
+  for (const toks of tokenized) {
+    const seen = new Set(toks);
+    for (const t of seen) {
+      const idx = vocab.get(t);
+      if (idx !== undefined) df[idx]++;
+    }
+  }
+
+  // sklearn smooth IDF: log((1+N)/(1+df)) + 1
+  const idf = new Float64Array(V);
+  for (let i = 0; i < V; i++) {
+    idf[i] = Math.log((1 + N) / (1 + df[i])) + 1;
+  }
+
+  // Build TF-IDF vector and L2-normalise for each document
+  const tfidfVecs: Float64Array[] = tokenized.map(toks => {
+    const tf = new Float64Array(V);
+    for (const t of toks) {
+      const idx = vocab.get(t);
+      if (idx !== undefined) tf[idx]++;
+    }
+    const total = toks.length || 1;
+    const vec = new Float64Array(V);
+    let norm = 0;
+    for (let i = 0; i < V; i++) {
+      vec[i] = (tf[i] / total) * idf[i];
+      norm += vec[i] * vec[i];
+    }
+    norm = Math.sqrt(norm);
+    if (norm > 0) {
+      for (let i = 0; i < V; i++) vec[i] /= norm;
+    }
+    return vec;
+  });
+
+  // Cosine similarity: query (index 0) vs each section (index 1..n)
+  const queryVec = tfidfVecs[0];
+  const scored = sections.map((s, i) => {
+    const docVec = tfidfVecs[i + 1];
+    let score = 0;
+    for (let j = 0; j < V; j++) score += queryVec[j] * docVec[j];
+    return { section_id: s.section_id, score };
+  });
+
+  return scored.sort((a, b) => b.score - a.score);
+}
+
+/**
+ * @deprecated Use tfidfCosineScore instead.
+ * Kept for backwards-compatibility with external consumers.
  */
 export function tfidfScore(
   query: string,
   sections: { section_id: string; text: string }[],
   stopwords: Set<string> = DEFAULT_STOPWORDS
 ): { section_id: string; score: number }[] {
-  const qterms = tokenize(query, stopwords);
-  if (qterms.length === 0 || sections.length === 0) {
-    return sections.map(s => ({ section_id: s.section_id, score: 0 }));
-  }
-
-  // 1. Tokenize once per section and build a frequency map + term Set
-  //    freq map: { term → count } for O(1) TF retrieval
-  //    termSet: Set<term>       for O(1) IDF doc-frequency check
-  const sectionData = sections.map(s => {
-    const terms = tokenize(s.text, stopwords);
-    const termSet = new Set(terms);
-    const freq: Record<string, number> = {};
-    for (const t of terms) freq[t] = (freq[t] || 0) + 1;
-    return { section_id: s.section_id, terms, termSet, freq };
-  });
-
-  // 2. Compute IDF for each unique query term using Set.has() — O(1) per section
-  //    Smooth non-negative formulation: log(1 + N / (1 + df))
-  //    Ensures IDF ≥ 0 even when a term appears in every document.
-  const idf: Record<string, number> = {};
-  for (const t of qterms) {
-    const matchingDocsCount = sectionData.filter(s => s.termSet.has(t)).length;
-    idf[t] = Math.log(1 + sections.length / (1 + matchingDocsCount));
-  }
-
-  // 3. Score each section using the freq map — no array scanning per term
-  const scored = sectionData.map(({ section_id, terms, freq }) => {
-    if (terms.length === 0) return { section_id, score: 0 };
-    let score = 0;
-    for (const t of qterms) {
-      // tf = count(t in doc) / total terms in doc — O(1) via freq map
-      const tf = (freq[t] || 0) / terms.length;
-      score += tf * (idf[t] || 0);
-    }
-    return { section_id, score };
-  });
-
-  return scored.sort((a, b) => b.score - a.score);
+  return tfidfCosineScore(query, sections, stopwords);
 }
 
 /**
@@ -220,6 +338,97 @@ export class IndexHydratedRAG {
       this.dimension = dummyEmb.length;
     }
     return this.dimension;
+  }
+
+  /**
+   * Uses the configured LLM to:
+   *   1. Detect the primary language of the candidate corpus.
+   *   2. Return a comprehensive stopword list for that language.
+   *
+   * The model is prompted with a representative text sample (up to 1 200 chars)
+   * and asked to respond in JSON:
+   *
+   *   { "language": "French", "languageCode": "fr", "stopwords": ["le", "la", ...] }
+   *
+   * The returned stopwords are merged with DEFAULT_STOPWORDS so the base
+   * English set always applies as a fallback, even for multilingual corpora.
+   *
+   * Falls back to DEFAULT_STOPWORDS if the LLM response cannot be parsed.
+   *
+   * @param candidateTexts - raw text strings from the candidate sections
+   */
+  private async generateLLMStopwords(
+    candidateTexts: string[]
+  ): Promise<{ stopwords: Set<string>; language: string; languageCode: string }> {
+    // Build a representative sample: concatenate unique texts, cap at 1 200 chars
+    const sampleRaw = candidateTexts
+      .map(t => t.trim())
+      .filter(t => t.length > 0)
+      .join(' ');
+    const sample = sampleRaw.slice(0, 1200);
+
+    const prompt = `You are a computational linguistics expert and a language-detection specialist.
+
+Analyse the following text sample taken from a document retrieval corpus:
+
+---
+${sample}
+---
+
+Tasks:
+1. Detect the primary language of the text.
+2. Produce a comprehensive, high-quality stopword list for that language.
+   Include: articles, prepositions, conjunctions, auxiliary verbs, pronouns,
+   common adverbs, and any other high-frequency function words that carry
+   no discriminative information for keyword search.
+   Include BOTH lowercase and common contracted forms (e.g. "don't", "it's").
+
+Return ONLY valid JSON with this exact schema — no prose, no markdown fences:
+{
+  "language": "<full language name, e.g. English>",
+  "languageCode": "<ISO 639-1 code, e.g. en>",
+  "stopwords": ["word1", "word2", ...]
+}`;
+
+    const { result: llmResponse, elapsedMs } = await timeOperation(
+      async () => this.model.generate(
+        [{ role: 'user', content: prompt }],
+        { config: new ChatConfig({ jsonMode: true }) }
+      )
+    );
+
+    let language = 'Unknown';
+    let languageCode = 'xx';
+    let llmWords: string[] = [];
+
+    try {
+      const parsed = JSON.parse(llmResponse.content);
+      language     = parsed.language     || 'Unknown';
+      languageCode = parsed.languageCode || 'xx';
+      llmWords     = Array.isArray(parsed.stopwords) ? parsed.stopwords : [];
+    } catch (err) {
+      logger.warn('Failed to parse LLM stopword response; falling back to DEFAULT_STOPWORDS', {
+        error: err instanceof Error ? err.message : String(err),
+        rawSnippet: llmResponse.content.slice(0, 200)
+      });
+    }
+
+    // Merge LLM words with DEFAULT_STOPWORDS (lowercase for consistency)
+    const merged = new Set(DEFAULT_STOPWORDS);
+    for (const w of llmWords) {
+      const lower = w.toLowerCase().trim();
+      if (lower.length > 0) merged.add(lower);
+    }
+
+    logger.info('LLM auto-stopwords generated', {
+      language,
+      languageCode,
+      llmStopwordsCount: llmWords.length,
+      totalStopwordsCount: merged.size,
+      llmElapsedMs: elapsedMs
+    });
+
+    return { stopwords: merged, language, languageCode };
   }
 
   private async getZvecCollection(docId: string) {
@@ -423,7 +632,6 @@ Example output format:
     });
     const limit = options?.limit ?? 5;
     const tfidfLimit = options?.tfidfLimit ?? 3;
-    const alwaysRunTfidf = options?.alwaysRunTfidf ?? false;
 
     // --- 3.1 LLM Call 1: Tool Agent ---
     const searchTool = {
@@ -555,48 +763,72 @@ Return a JSON object containing:
     // Prune using parent-absorbs-child rule
     const prunedDbIds = pruneSubtrees(Array.from(expandedDbIds));
 
-    // --- 3.2 Context Window Gate ---
-    const lenRes = await this.db.query(
-      `SELECT section_id, length(content) AS chars FROM section_table WHERE doc_id = $1 AND section_id = ANY($2)`,
+    // --- Step 3: Collect full text for all pruned candidates ---
+    //     Text = heading + summary + content (mirrors notebook: content_title + sub_title + value)
+    const contentRes = await this.db.query(
+      `SELECT section_id, heading, summary, content FROM section_table
+       WHERE doc_id = $1 AND section_id = ANY($2)`,
       [docId, prunedDbIds]
     );
 
     let totalChars = 0;
-    for (const row of lenRes.rows) {
-      totalChars += parseInt(row.chars) || 0;
+    for (const row of contentRes.rows) {
+      totalChars += (row.content?.length || 0) + (row.summary?.length || 0);
     }
-
-    const estimatedTokens = totalChars * 0.25;
-    let finalDbIds = prunedDbIds;
-    let pathUsed: 'fast' | 'tfidf' = 'fast';
 
     logger.info('Context window budget status', {
       docId,
       prunedDbIdsCount: prunedDbIds.length,
       totalChars,
-      estimatedTokens,
-      alwaysRunTfidf
+      estimatedTokens: totalChars * 0.25
     });
 
-    if (alwaysRunTfidf || estimatedTokens > 6000) {
-      pathUsed = 'tfidf';
-      // Fetch full content texts for candidates
-      const contentRes = await this.db.query(
-        `SELECT section_id, heading, content FROM section_table WHERE doc_id = $1 AND section_id = ANY($2)`,
-        [docId, prunedDbIds]
-      );
-      
-      const candidateTexts = contentRes.rows.map(row => ({
-        section_id: row.section_id,
-        text: `${row.heading || ''} ${row.content || ''}`
-      }));
+    // --- Step 4: TF-IDF cosine re-rank — ALWAYS runs unconditionally ---
+    //     Mirrors notebook: TfidfVectorizer(stop_words, ngram_range=(1,2))
+    //     fitted on [query] + section_docs, then cosine_similarity(query, sections)
 
-      const { result: ranked, elapsedMs: tfidfElapsed } = await timeOperation(
-        async () => tfidfScore(query, candidateTexts, options?.stopwords)
+    const candidateTexts = contentRes.rows.map(row => ({
+      section_id: row.section_id,
+      // Full combined text: heading + summary + content (equivalent to notebook's
+      // content_title + sub_title + value combination)
+      text: [
+        row.heading   || '',
+        row.summary   || '',
+        row.content   || ''
+      ].join(' ').trim()
+    }));
+
+    // Optionally derive stopwords via LLM language detection
+    const useAutoStopwords = options?.autoStopwords ?? false;
+    const baseStopwords    = options?.stopwords ?? DEFAULT_STOPWORDS;
+    let effectiveStopwords = baseStopwords;
+
+    if (useAutoStopwords) {
+      // LLM detects the corpus language and returns language-specific stopwords
+      const { stopwords: llmStops, language, languageCode } = await this.generateLLMStopwords(
+        candidateTexts.map(c => c.text)
       );
-      finalDbIds = ranked.slice(0, tfidfLimit).map(r => r.section_id);
-      logger.info('TF-IDF re-ranking completed', { docId, tfidfElapsedMs: tfidfElapsed });
+      effectiveStopwords = llmStops;
+      logger.info('Using LLM-generated language-specific stopwords for TF-IDF', {
+        docId, language, languageCode,
+        totalStopwords: effectiveStopwords.size
+      });
     }
+
+    const { result: ranked, elapsedMs: tfidfElapsed } = await timeOperation(
+      async () => tfidfCosineScore(query, candidateTexts, effectiveStopwords)
+    );
+
+    const finalDbIds = ranked.slice(0, tfidfLimit).map(r => r.section_id);
+
+    logger.info('TF-IDF cosine re-ranking completed', {
+      docId,
+      tfidfElapsedMs: tfidfElapsed,
+      candidateCount: candidateTexts.length,
+      kept: finalDbIds.length,
+      autoStopwords: useAutoStopwords,
+      topScores: ranked.slice(0, tfidfLimit).map(r => ({ id: r.section_id, score: r.score.toFixed(4) }))
+    });
 
     // --- 3.4 Recursive heading lineage climbing ---
     const { result: treeRes, elapsedMs: climbElapsed } = await timeOperation(
@@ -649,7 +881,7 @@ Query: ${query}`;
 
     logger.info('Answer generated successfully (IHR)', {
       docId,
-      path: pathUsed,
+      path: 'tfidf',
       finalDbIdsCount: finalDbIds.length,
       contextLength: contextStr.length,
       climbElapsedMs: climbElapsed,
@@ -660,7 +892,7 @@ Query: ${query}`;
       answer: answerResponse.content,
       context: contextStr,
       retrievedSections: finalDbIds.map(dbId => this.fromDbId(dbId)),
-      path: pathUsed
+      path: 'tfidf'
     };
   }
 }

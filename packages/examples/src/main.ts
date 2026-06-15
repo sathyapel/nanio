@@ -205,7 +205,7 @@ class MockPgClient {
       return { rows };
     }
 
-    if (sqlClean.includes('SELECT section_id, heading, content FROM section_table') && sqlClean.includes('ANY')) {
+    if ((sqlClean.includes('SELECT section_id, heading, content FROM section_table') || sqlClean.includes('SELECT section_id, heading, summary, content FROM section_table')) && sqlClean.includes('ANY')) {
       const docId = params[0];
       const sectionIds = params[1];
       const rows = this.tables.section_table
@@ -213,6 +213,7 @@ class MockPgClient {
         .map(r => ({
           section_id: r.section_id,
           heading: r.heading,
+          summary: r.summary,
           content: r.content
         }));
       return { rows };
@@ -800,11 +801,23 @@ async function runDemo() {
         const hasSearch = messages.some(m => m.content && m.content.includes('You are a great tree search engineer'));
         const hasIngest = messages.some(m => m.content && m.content.includes('You are a document structure analyst'));
         const hasAnswer = messages.some(m => m.content && m.content.includes('answering queries based on the structured document context'));
+        const hasStopwords = messages.some(m => m.content && m.content.includes('language-detection specialist'));
 
         if (hasIngest) {
           return {
             content: this.mockIngestResponse,
             usage: { promptTokens: 50, completionTokens: 50, totalTokens: 100 }
+          };
+        }
+
+        if (hasStopwords) {
+          return {
+            content: JSON.stringify({
+              language: 'English',
+              languageCode: 'en',
+              stopwords: ['the', 'a', 'an', 'and', 'or', 'but']
+            }),
+            usage: { promptTokens: 60, completionTokens: 25, totalTokens: 85 }
           };
         }
 
@@ -919,6 +932,19 @@ async function runDemo() {
       retrieved: responseTfidf.retrievedSections
     });
     logger.info('Context tree lineage for LLM:\n' + responseTfidf.context);
+
+    // Run Test 3: LLM Auto-Stopwords
+    logger.info('Executing IHR query (Test 3: LLM Auto-Stopwords)...');
+    const responseAutoStopwords = await ihr.retrieve('Explain the context gating architecture.', docId, {
+      tfidfLimit: 1,
+      autoStopwords: true
+    });
+    logger.info('LLM Auto-Stopwords path response retrieved:', {
+      answer: responseAutoStopwords.answer,
+      path: responseAutoStopwords.path,
+      retrieved: responseAutoStopwords.retrievedSections
+    });
+    logger.info('Context tree lineage for LLM:\n' + responseAutoStopwords.context);
 
     // -----------------------------------------------------------------------
     // 15. Multi-Provider IHR — GeminiEmbeddings (768-dim cloud)
