@@ -1,6 +1,20 @@
 # nanio
 
-A production-grade, lightweight, modular TypeScript agentic framework featuring structured logging, cost-budget enforcement, resilient provider models (circuit breakers, rate limiting, full jitter retries), pluggable database persistence (PostgreSQL/pgvector, MongoDB, Qdrant REST), and tool integration.
+> [!WARNING]
+> **Status: Alpha (Experimental)** — `nanio` is currently in active, experimental development. API surfaces are subject to change.
+
+🤝 **Collaborators & Contributors Needed!** We are actively looking for developers to join the project, contribute to the core architecture, add new database drivers, write providers, and refine agentic design patterns. Feel free to open issues or submit PRs!
+
+A production-grade, lightweight, and modular TypeScript agentic framework designed to bring structured logging, safety limits, and high reliability to LLM application engineering.
+
+## ✨ Key Features
+
+*   **Dynamic LLM Routing & Registry (`@nanio/registry`)**: Dynamically route LLM completions across multiple models and endpoints with custom router mapping, fallback lists, and tier-specific overrides.
+*   **Minimal & Modular Tools (`@nanio/tools`)**: Standardized, lightweight function schemas powered by Zod validation, making it easy to expose custom capabilities to LLMs.
+*   **Resilient AI Providers (`@nanio/providers`)**: Native REST clients for **Gemini, OpenAI, Claude, and xAI (Grok)** equipped with token-bucket rate limiters (supporting VIP tiers), circuit breakers to isolate downstream failures, and exponential retries with jitter.
+*   **Pluggable Database Persistence**: Drivers for similarity searching (**PgVector, MongoDB, and Qdrant REST**), PostgreSQL-backed session memory repositories, cost configurations, and metric counters.
+*   **Structured JSON Observability (`@nanio/observability`)**: Seamless request context propagation using Node's `AsyncLocalStorage`, automatic PII/secret scrubbing (regex-based sanitization for emails, phone numbers, and keys), and execution budgets.
+
 
 ## 📦 Package Architecture
 
