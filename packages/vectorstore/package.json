@@ -1,6 +1,6 @@
 {
   "name": "@nanio/vectorstore",
-  "version": "0.1.0",
+  "version": "0.0.1-alpha.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -8,7 +8,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@nanio/embeddings": "*",
+    "@nanio/embeddings": "^0.0.1-alpha.0",
     "pg": "^8.11.5"
   },
   "devDependencies": {
