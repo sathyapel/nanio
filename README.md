@@ -189,6 +189,7 @@ IndexHydratedRAG is designed for complex document hierarchies where section rela
 *   **Multi-Lingual Publications & Books**: LLM-powered automatic stopword generation detects the primary language of the retrieved corpus (e.g. French, Spanish, German) dynamically, generating language-specific stopwords on the fly to yield precise keyword matching for TF-IDF re-ranking.
 *   **Legal Contracts & Compliance Documents**: Navigating clauses, sub-clauses, and cross-references. Subtree pruning deduplicates overlapping parent-child text hierarchies to fit context budgets while keeping the logical document sequence intact.
 *   **Medical Diagnostic Manuals**: Querying clinical structures where keyword alignment is paramount. Unconditional TF-IDF cosine re-ranking uses a vocabulary of unigrams and bigrams fitted across candidates to elevate exact matches.
+*   **Hierarchical Course Curricula & Textbooks**: Accessing educational materials organized by unit, chapter, and sub-chapter. For student queries targeting highly specific exercises or formulas, ancestor climbing supplies the parent chapter's baseline theory to ground the LLM's explanation.
 
 ## 🚀 Getting Started
 
