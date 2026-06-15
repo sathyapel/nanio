@@ -10,6 +10,7 @@ A production-grade, lightweight, and modular TypeScript agentic framework design
 ## ✨ Key Features
 
 *   **Dynamic LLM Routing & Registry (`@nanio/registry`)**: Dynamically route LLM completions across multiple models and endpoints with custom router mapping, fallback lists, and tier-specific overrides.
+*   **IndexHydratedRAG (`@nanio/ihr`)**: Tree-structured RAG architecture implementing local `@zvec/zvec` collections for zero-server semantic indexing, local `@huggingface/transformers` feature extraction, contextual link expansion, hierarchical pruning, context token gating, and recursive ancestor tree climbing.
 *   **Minimal & Modular Tools (`@nanio/tools`)**: Standardized, lightweight function schemas powered by Zod validation, making it easy to expose custom capabilities to LLMs.
 *   **Resilient AI Providers (`@nanio/providers`)**: Native REST clients for **Gemini, OpenAI, Claude, and xAI (Grok)** equipped with token-bucket rate limiters (supporting VIP tiers), circuit breakers to isolate downstream failures, and exponential retries with jitter.
 *   **Pluggable Database Persistence**: Drivers for similarity searching (**PgVector, MongoDB, and Qdrant REST**), PostgreSQL-backed session memory repositories, cost configurations, and metric counters.
@@ -23,12 +24,15 @@ A production-grade, lightweight, and modular TypeScript agentic framework design
 *   **`@nanio/core`**: Core model interfaces (`BaseModel`, `BaseMemory`), Pg-backed chat memory, and config repositories.
 *   **`@nanio/observability`**: Structured JSON logging (with automatic PII/secret scrubbing), request context propagation using `AsyncLocalStorage`, and pluggable performance telemetry / cost-budget trackers (Postgres, Mongo, Redis, Memory).
 *   **`@nanio/providers`**: Resilient clients for Gemini, OpenAI, Claude, and xAI (Grok Chat & Image generation) implementing token buckets, circuit breakers, and exponential backoff retry policies.
-*   **`@nanio/embeddings`**: Standard and batch-optimized embeddings (Gemini batch embedding).
+*   **`@nanio/embeddings`**: Standard and batch-optimized embeddings (Gemini batch embedding, local Transformers embeddings).
 *   **`@nanio/vectorstore`**: Pluggable similarity searches (Memory, MongoDB, PgVector, and Qdrant REST).
 *   **`@nanio/registry`**: Model provider routers with fallback mechanisms.
 *   **`@nanio/tools`**: Executable function schemas.
+*   **`@nanio/ihr`**: IndexHydratedRAG implementation using embedded Zvec vector search and relational SQL tables.
 
-## 💡 Quick Example
+## 💡 Quick Examples
+
+### 1. Dynamic LLM Registry Routing
 
 Here is a quick example showing how to initialize clients, wrap them in a dynamic fallback `LLMRegistry`, and invoke the generation with tier-based `ChatConfig` overrides:
 
@@ -62,6 +66,55 @@ const response = await registry.generate(
 );
 
 console.log(response.content);
+```
+
+### 2. IndexHydratedRAG (IHR) with Embedded Zvec Index
+
+Here is an example showing how to ingest a document outline tree and perform IndexHydratedRAG queries using local Zvec vector storage and local SentenceTransformer model embeddings:
+
+```typescript
+import pg from 'pg';
+import { GeminiModel } from '@nanio/providers';
+import { TransformersEmbeddings } from '@nanio/embeddings';
+import { IndexHydratedRAG, IngestSection } from '@nanio/ihr';
+
+// 1. Initialize DB client and local embeddings
+const db = new pg.Client("postgresql://localhost:5432/nanio");
+await db.connect();
+
+const embeddings = new TransformersEmbeddings('Xenova/all-MiniLM-L6-v2');
+const model = new GeminiModel('gemini-2.0-flash');
+
+const ihr = new IndexHydratedRAG(db, embeddings, model);
+await ihr.initializeSchema();
+
+// 2. Ingest structured document outline tree
+const sections: IngestSection[] = [
+  {
+    section_id: '1',
+    parent_id: null,
+    level: 1,
+    heading: 'Introduction to Nanio',
+    content: '',
+    summary: 'Overview of the nanio lightweight agentic framework.'
+  },
+  {
+    section_id: '1.1',
+    parent_id: '1',
+    level: 2,
+    heading: 'Core Architecture',
+    content: 'The core architecture is based on lightweight ESM packages.',
+    summary: 'Explains the ESM package structures and core module.'
+  }
+];
+
+await ihr.ingest('doc_123', 'Nanio Specifications', 'https://nanio.dev/specs', sections);
+
+// 3. Query the collection (runs fast path, TF-IDF gating, pruning, and ancestor climbing)
+const response = await ihr.retrieve('Explain the core architecture.', 'doc_123');
+
+console.log('Answer:', response.answer);
+console.log('Context Tree Lineage:', response.context);
 ```
 
 ## 🚀 Getting Started

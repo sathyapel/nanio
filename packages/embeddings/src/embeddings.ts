@@ -1,3 +1,5 @@
+import { pipeline } from '@huggingface/transformers';
+
 /**
  * Base abstract class for generating embeddings.
  */
@@ -104,5 +106,41 @@ export class GeminiEmbeddings extends BaseEmbeddings {
     }
 
     return allEmbeddings;
+  }
+}
+
+/**
+ * Concrete implementation for Local Embeddings using Hugging Face Transformers.
+ */
+export class TransformersEmbeddings extends BaseEmbeddings {
+  private extractorPromise: any = null;
+
+  constructor(public modelName: string = 'Xenova/all-MiniLM-L6-v2') {
+    super();
+  }
+
+  private async getExtractor() {
+    if (!this.extractorPromise) {
+      this.extractorPromise = pipeline('feature-extraction', this.modelName);
+    }
+    return this.extractorPromise;
+  }
+
+  async embedQuery(text: string): Promise<number[]> {
+    const extractor = await this.getExtractor();
+    const output = await extractor(text, {
+      pooling: 'mean',
+      normalize: true,
+    });
+    return Array.from(output.data);
+  }
+
+  async embedDocuments(texts: string[]): Promise<number[][]> {
+    const results: number[][] = [];
+    for (const text of texts) {
+      const emb = await this.embedQuery(text);
+      results.push(emb);
+    }
+    return results;
   }
 }

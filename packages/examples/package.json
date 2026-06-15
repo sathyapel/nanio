@@ -15,6 +15,7 @@
     "@nanio/vectorstore": "^0.0.1-alpha.1",
     "@nanio/observability": "^0.0.1-alpha.1",
     "@nanio/registry": "^0.0.1-alpha.1",
+    "@nanio/ihr": "^0.0.1-alpha.1",
     "dotenv": "^16.4.5"
   }
 }

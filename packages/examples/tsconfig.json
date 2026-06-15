@@ -12,6 +12,7 @@
     { "path": "../embeddings" },
     { "path": "../vectorstore" },
     { "path": "../observability" },
-    { "path": "../registry" }
+    { "path": "../registry" },
+    { "path": "../ihr" }
   ]
 }

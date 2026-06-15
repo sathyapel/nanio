@@ -21,6 +21,7 @@
     { "path": "packages/embeddings" },
     { "path": "packages/vectorstore" },
     { "path": "packages/registry" },
+    { "path": "packages/ihr" },
     { "path": "packages/examples" }
   ]
 }

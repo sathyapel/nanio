@@ -13,9 +13,10 @@ import {
 } from '@nanio/core';
 import { FunctionTool } from '@nanio/tools';
 import { GeminiModel, BaseAIClient, ClaudeModel, XAIModel, XAIImageClient } from '@nanio/providers';
-import { GeminiEmbeddings } from '@nanio/embeddings';
+import { GeminiEmbeddings, TransformersEmbeddings } from '@nanio/embeddings';
 import { MemoryVectorStore, MongoVectorStore, PgVectorStore, QdrantVectorStore, Document } from '@nanio/vectorstore';
 import { FallbackRouter, LLMRegistry } from '@nanio/registry';
+import { IndexHydratedRAG, IngestSection } from '@nanio/ihr';
 import {
   runWithContext,
   newRequestContext,
@@ -79,7 +80,9 @@ class MockPgClient {
     perf_counters: [],
     perf_gauges: [],
     llm_configs: [],
-    conversation_turns: []
+    conversation_turns: [],
+    section_table: [],
+    index_table: []
   };
 
   private lastSerialIds: Record<string, number> = {
@@ -96,16 +99,27 @@ class MockPgClient {
     }
 
     if (sqlClean.includes('INSERT INTO documents')) {
-      const content = params[0];
-      const metadata = typeof params[1] === 'string' ? JSON.parse(params[1]) : params[1];
-      const embedding = params[2].replace(/[\[\]]/g, '').split(',').map(Number);
-      this.tables.documents.push({
-        id: ++this.lastSerialIds.documents,
-        content,
-        metadata,
-        embedding
-      });
-      return { rows: [] };
+      if (sqlClean.includes('source_url')) {
+        const [id, title, source_url] = params;
+        this.tables.documents.push({
+          id,
+          title,
+          source_url,
+          ingested_at: new Date()
+        });
+        return { rows: [] };
+      } else {
+        const content = params[0];
+        const metadata = typeof params[1] === 'string' ? JSON.parse(params[1]) : params[1];
+        const embedding = params[2].replace(/[\[\]]/g, '').split(',').map(Number);
+        this.tables.documents.push({
+          id: ++this.lastSerialIds.documents,
+          content,
+          metadata,
+          embedding
+        });
+        return { rows: [] };
+      }
     }
 
     if (sqlClean.includes('SELECT content, metadata, (embedding <=> $1)')) {
@@ -123,6 +137,132 @@ class MockPgClient {
 
       scored.sort((a, b) => a.distance - b.distance);
       return { rows: scored.slice(0, limit) };
+    }
+
+    if (sqlClean.includes('DELETE FROM section_table')) {
+      const docId = params[0];
+      this.tables.section_table = this.tables.section_table.filter(s => s.doc_id !== docId);
+      return { rows: [] };
+    }
+
+    if (sqlClean.includes('DELETE FROM index_table')) {
+      const docId = params[0];
+      this.tables.index_table = this.tables.index_table.filter(s => s.doc_id !== docId);
+      return { rows: [] };
+    }
+
+    if (sqlClean.includes('INSERT INTO section_table')) {
+      const [doc_id, section_id, parent_id, level, heading, content, summary] = params;
+      this.tables.section_table.push({
+        id: this.tables.section_table.length + 1,
+        doc_id,
+        section_id,
+        parent_id,
+        level,
+        heading,
+        content,
+        summary
+      });
+      return { rows: [] };
+    }
+
+    if (sqlClean.includes('INSERT INTO index_table')) {
+      const [section_id, doc_id, summary, embedding, related_ids, sibling_ids] = params;
+      this.tables.index_table.push({
+        section_id,
+        doc_id,
+        summary,
+        embedding,
+        related_ids,
+        sibling_ids
+      });
+      return { rows: [] };
+    }
+
+    if (sqlClean.includes('SELECT section_id, embedding FROM index_table') && !sqlClean.includes('ANY')) {
+      const docId = params[0];
+      const rows = this.tables.index_table.filter(r => r.doc_id === docId);
+      return { rows };
+    }
+
+    if (sqlClean.includes('SELECT section_id, related_ids, sibling_ids FROM index_table') && sqlClean.includes('ANY')) {
+      const docId = params[0];
+      const sectionIds = params[1];
+      const rows = this.tables.index_table.filter(r => r.doc_id === docId && sectionIds.includes(r.section_id));
+      return { rows };
+    }
+
+    if (sqlClean.includes('SELECT section_id, length(content) AS chars FROM section_table')) {
+      const docId = params[0];
+      const sectionIds = params[1];
+      const rows = this.tables.section_table
+        .filter(r => r.doc_id === docId && sectionIds.includes(r.section_id))
+        .map(r => ({
+          section_id: r.section_id,
+          chars: r.content ? r.content.length : 0
+        }));
+      return { rows };
+    }
+
+    if (sqlClean.includes('SELECT section_id, heading, content FROM section_table') && sqlClean.includes('ANY')) {
+      const docId = params[0];
+      const sectionIds = params[1];
+      const rows = this.tables.section_table
+        .filter(r => r.doc_id === docId && sectionIds.includes(r.section_id))
+        .map(r => ({
+          section_id: r.section_id,
+          heading: r.heading,
+          content: r.content
+        }));
+      return { rows };
+    }
+
+    if (sqlClean.includes('SELECT section_id, summary FROM index_table') && sqlClean.includes('ANY')) {
+      const docId = params[0];
+      const sectionIds = params[1];
+      const rows = this.tables.index_table.filter(r => r.doc_id === docId && sectionIds.includes(r.section_id));
+      return { rows };
+    }
+
+    if (sqlClean.includes('WITH RECURSIVE ancestors AS')) {
+      const docId = params[0];
+      const sectionIds = params[1];
+      const results = new Map<string, any>();
+
+      const findNode = (secId: string) => {
+        return this.tables.section_table.find(n => n.doc_id === docId && n.section_id === secId);
+      };
+
+      const queue = [...sectionIds];
+      while (queue.length > 0) {
+        const currentId = queue.shift();
+        if (!currentId) continue;
+        if (results.has(currentId)) continue;
+
+        const node = findNode(currentId);
+        if (node) {
+          results.set(currentId, {
+            id: node.id,
+            doc_id: node.doc_id,
+            section_id: node.section_id,
+            parent_id: node.parent_id,
+            level: node.level,
+            heading: node.heading,
+            content: node.content
+          });
+          if (node.parent_id) {
+            queue.push(node.parent_id);
+          }
+        }
+      }
+
+      const rows = Array.from(results.values());
+      rows.sort((a, b) => {
+        if (a.level !== b.level) return a.level - b.level;
+        return a.section_id.localeCompare(b.section_id);
+      });
+
+      return { rows };
     }
 
     if (sqlClean.includes('INSERT INTO llm_cost_events')) {
@@ -563,6 +703,146 @@ async function runDemo() {
       { config: new ChatConfig({ userId: 'throttled-user', userTier: 'FREE', modelTier: 'PRIMARY' }) }
     );
     logger.info(`Budget throttled generation result: ${resThrottled.content} (Primary calls: ${primaryModel.callCount}, Lighter calls: ${lighterModel.callCount})`);
+
+    // 14. Verify IndexHydratedRAG (IHR) implementation
+    logger.info('=== VERIFYING INDEX HYDRATED RAG (IHR) ===');
+    
+    class IhrMockModel extends BaseModel {
+      public name = 'ihr-mock-model';
+      public mockIngestResponse = JSON.stringify({
+        '1': { related_ids: [], sibling_ids: [], prerequisite_ids: [] },
+        '1.1': { related_ids: [], sibling_ids: ['1.2'], prerequisite_ids: ['1'] },
+        '1.2': { related_ids: [], sibling_ids: ['1.1'], prerequisite_ids: ['1'] },
+        '1.2.1': { related_ids: [], sibling_ids: [], prerequisite_ids: ['1.2'] }
+      });
+      public mockSearchResponse = JSON.stringify({
+        sections: ['1.2.1']
+      });
+      public mockAnswerResponse = 'IndexHydratedRAG is fully operational with context tree lineage!';
+
+      async generate(messages: Message[], options?: GenerateOptions): Promise<LLMResponse> {
+        const hasSearch = messages.some(m => m.content && m.content.includes('You are a great tree search engineer'));
+        const hasIngest = messages.some(m => m.content && m.content.includes('You are a document structure analyst'));
+        const hasAnswer = messages.some(m => m.content && m.content.includes('answering queries based on the structured document context'));
+
+        if (hasIngest) {
+          return {
+            content: this.mockIngestResponse,
+            usage: { promptTokens: 50, completionTokens: 50, totalTokens: 100 }
+          };
+        }
+
+        if (hasSearch) {
+          const hasToolResult = messages.some(m => m.role === 'tool');
+          if (!hasToolResult) {
+            const userMsg = messages.find(m => m.role === 'user')?.content || '';
+            return {
+              content: 'Calling search_sections tool...',
+              toolCalls: [{
+                id: 'call_search',
+                name: 'search_sections',
+                arguments: { query: userMsg }
+              }]
+            };
+          }
+          return {
+            content: this.mockSearchResponse,
+            usage: { promptTokens: 80, completionTokens: 20, totalTokens: 100 }
+          };
+        }
+
+        if (hasAnswer) {
+          return {
+            content: this.mockAnswerResponse,
+            usage: { promptTokens: 150, completionTokens: 30, totalTokens: 180 }
+          };
+        }
+
+        return {
+          content: 'Default mock response',
+          usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 }
+        };
+      }
+    }
+
+    const ihrModel = new IhrMockModel();
+    const ihrEmbeddings = new TransformersEmbeddings('Xenova/all-MiniLM-L6-v2');
+
+    const ihr = new IndexHydratedRAG(mockPg, ihrEmbeddings, ihrModel);
+    await ihr.initializeSchema();
+    logger.info('IHR Database Schemas initialized.');
+
+    const docId = 'doc_nanio_guidelines';
+    const sections: IngestSection[] = [
+      {
+        section_id: '1',
+        parent_id: null,
+        level: 1,
+        heading: 'Introduction to Nanio',
+        content: '',
+        summary: 'Overview of the nanio lightweight agentic framework.'
+      },
+      {
+        section_id: '1.1',
+        parent_id: '1',
+        level: 2,
+        heading: 'Core Architecture',
+        content: 'The core architecture is based on lightweight ESM packages.',
+        summary: 'Explains the ESM package structures and core module.'
+      },
+      {
+        section_id: '1.2',
+        parent_id: '1',
+        level: 2,
+        heading: 'IndexHydratedRAG Design',
+        content: 'IndexHydratedRAG uses a two-layer pointer indexing design to combine vector speed with SQL tree lineage.',
+        summary: 'Details of the IndexHydratedRAG (IHR) retrieval design.'
+      },
+      {
+        section_id: '1.2.1',
+        parent_id: '1.2',
+        level: 3,
+        heading: 'Context Gating System',
+        content: 'Context Gating prevents context token budget exhaustion by estimating tokens in real time.',
+        summary: 'Detailed explanation of character token ratio budget gating.'
+      }
+    ];
+
+    logger.info('Ingesting structured documents into IHR relational and vector tables...');
+    await ihr.ingest(docId, 'Nanio Architecture Specification', 'https://nanio.dev/specs', sections);
+    const { ZVecOpen } = await import('@zvec/zvec');
+    const zcol = ZVecOpen(`./zvec_data/${docId}`);
+    logger.info('Ingestion complete. Database table and Zvec stats:', {
+      documents: mockPg.tables.documents.length,
+      sections: mockPg.tables.section_table.length,
+      zvecDocs: zcol.stats.docCount
+    });
+    zcol.closeSync();
+
+    // Run Test 1: Fast Path (Small content)
+    logger.info('Executing IHR query (Test 1: Fast Path)...');
+    const responseFast = await ihr.retrieve('Explain the context gating architecture.', docId);
+    logger.info('Fast path response retrieved:', {
+      answer: responseFast.answer,
+      path: responseFast.path,
+      retrieved: responseFast.retrievedSections
+    });
+    logger.info('Context tree lineage for LLM:\n' + responseFast.context);
+
+    // Run Test 2: TF-IDF Fallback (Large content exceeding gate)
+    logger.info('Executing IHR query (Test 2: TF-IDF Fallback Path)...');
+    const targetNode = mockPg.tables.section_table.find((n: any) => n.section_id === `${docId}__1.2.1`);
+    if (targetNode) {
+      targetNode.content = 'Context Gating prevents context token budget exhaustion. '.repeat(500); // 30,000+ chars
+    }
+
+    const responseTfidf = await ihr.retrieve('Explain the context gating architecture.', docId, { tfidfLimit: 1 });
+    logger.info('TF-IDF fallback path response retrieved:', {
+      answer: responseTfidf.answer,
+      path: responseTfidf.path,
+      retrieved: responseTfidf.retrievedSections
+    });
+    logger.info('Context tree lineage for LLM:\n' + responseTfidf.context);
   });
 
   logger.info('=== DEMO EXECUTION COMPLETE ===');
