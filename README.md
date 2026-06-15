@@ -28,6 +28,42 @@ A production-grade, lightweight, and modular TypeScript agentic framework design
 *   **`@nanio/registry`**: Model provider routers with fallback mechanisms.
 *   **`@nanio/tools`**: Executable function schemas.
 
+## 💡 Quick Example
+
+Here is a quick example showing how to initialize clients, wrap them in a dynamic fallback `LLMRegistry`, and invoke the generation with tier-based `ChatConfig` overrides:
+
+```typescript
+import { GeminiModel, ClaudeModel } from '@nanio/providers';
+import { LLMRegistry } from '@nanio/registry';
+import { ChatConfig } from '@nanio/core';
+
+// 1. Initialize different model clients
+const primary = new GeminiModel('gemini-2.0-flash');
+const fallback = new ClaudeModel('claude-3-5-sonnet-20241022');
+
+// 2. Set up the registry fallback chain
+const registry = new LLMRegistry([
+  { tier: 'PRIMARY', model: primary, name: 'gemini-primary' },
+  { tier: 'LIGHTER', model: fallback, name: 'claude-fallback' }
+]);
+
+// 3. Configure generation settings with tier overrides
+const config = new ChatConfig({
+  userId: 'user_12345',
+  userTier: 'FREE', // Enforces FREE tier rate-limit rules
+  modelTier: 'PRIMARY', // Starts attempts at the PRIMARY tier
+  temperature: 0.85
+});
+
+// 4. Generate completions (will automatically failover to Claude if Gemini hits rate limits)
+const response = await registry.generate(
+  [{ role: 'user', content: 'Design a lightweight TypeScript architecture.' }],
+  { config }
+);
+
+console.log(response.content);
+```
+
 ## 🚀 Getting Started
 
 ### Installation from NPM
