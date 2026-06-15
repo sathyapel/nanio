@@ -91,19 +91,25 @@ export class GeminiModel extends BaseAIClient {
       const geminiMessages = mapMessagesToGemini(messages);
       const url = `${this.baseUrl}/v1beta/models/${this.name}:generateContent?key=${this.apiKey}`;
 
+      const config = options?.config;
       const body: any = {
         contents: geminiMessages,
         generationConfig: {
-          temperature: options?.temperature ?? 0.7,
-          maxOutputTokens: options?.maxTokens ?? 2048,
+          temperature: config?.temperature ?? options?.temperature ?? 0.7,
+          maxOutputTokens: config?.maxTokens ?? options?.maxTokens ?? 2048,
           stopSequences: options?.stopSequences
         }
       };
 
-      if (options?.tools && options.tools.length > 0) {
+      if (config?.jsonMode) {
+        body.generationConfig.responseMimeType = 'application/json';
+      }
+
+      const tools = config?.tools ?? options?.tools;
+      if (tools && tools.length > 0) {
         body.tools = [
           {
-            functionDeclarations: options.tools.map(tool => ({
+            functionDeclarations: tools.map(tool => ({
               name: tool.name,
               description: tool.description,
               parameters: convertSchemaToGemini(tool.parameters)
@@ -243,16 +249,22 @@ export class OpenAIModel extends BaseAIClient {
         };
       });
 
+      const config = options?.config;
       const body: any = {
         model: this.name,
         messages: openaiMessages,
-        temperature: options?.temperature ?? 0.7,
-        max_tokens: options?.maxTokens,
+        temperature: config?.temperature ?? options?.temperature ?? 0.7,
+        max_tokens: config?.maxTokens ?? options?.maxTokens,
         stop: options?.stopSequences
       };
 
-      if (options?.tools && options.tools.length > 0) {
-        body.tools = options.tools.map(tool => ({
+      if (config?.jsonMode) {
+        body.response_format = { type: 'json_object' };
+      }
+
+      const tools = config?.tools ?? options?.tools;
+      if (tools && tools.length > 0) {
+        body.tools = tools.map(tool => ({
           type: 'function',
           function: {
             name: tool.name,
@@ -411,11 +423,12 @@ export class ClaudeModel extends BaseAIClient {
       const url = `${this.baseUrl}/messages`;
       const { claudeMessages, systemPrompt } = mapMessagesToClaude(messages);
 
+      const config = options?.config;
       const body: any = {
         model: this.name,
         messages: claudeMessages,
-        max_tokens: options?.maxTokens ?? 4096,
-        temperature: options?.temperature ?? 0.7
+        max_tokens: config?.maxTokens ?? options?.maxTokens ?? 4096,
+        temperature: config?.temperature ?? options?.temperature ?? 0.7
       };
 
       if (systemPrompt) {
@@ -426,8 +439,9 @@ export class ClaudeModel extends BaseAIClient {
         body.stop_sequences = options.stopSequences;
       }
 
-      if (options?.tools && options.tools.length > 0) {
-        body.tools = options.tools.map(tool => ({
+      const tools = config?.tools ?? options?.tools;
+      if (tools && tools.length > 0) {
+        body.tools = tools.map(tool => ({
           name: tool.name,
           description: tool.description,
           input_schema: tool.parameters
@@ -546,16 +560,22 @@ export class XAIModel extends BaseAIClient {
         };
       });
 
+      const config = options?.config;
       const body: any = {
         model: this.name,
         messages: xaiMessages,
-        temperature: options?.temperature ?? 0.7,
-        max_tokens: options?.maxTokens,
+        temperature: config?.temperature ?? options?.temperature ?? 0.7,
+        max_tokens: config?.maxTokens ?? options?.maxTokens,
         stop: options?.stopSequences
       };
 
-      if (options?.tools && options.tools.length > 0) {
-        body.tools = options.tools.map(tool => ({
+      if (config?.jsonMode) {
+        body.response_format = { type: 'json_object' };
+      }
+
+      const tools = config?.tools ?? options?.tools;
+      if (tools && tools.length > 0) {
+        body.tools = tools.map(tool => ({
           type: 'function',
           function: {
             name: tool.name,

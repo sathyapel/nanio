@@ -8,13 +8,14 @@ import {
   LLMResponse, 
   GenerateOptions,
   PgLLMConfigRepository,
-  PgChatMemory
+  PgChatMemory,
+  ChatConfig
 } from '@nanio/core';
 import { FunctionTool } from '@nanio/tools';
 import { GeminiModel, BaseAIClient, ClaudeModel, XAIModel, XAIImageClient } from '@nanio/providers';
 import { GeminiEmbeddings } from '@nanio/embeddings';
 import { MemoryVectorStore, MongoVectorStore, PgVectorStore, QdrantVectorStore, Document } from '@nanio/vectorstore';
-import { FallbackRouter } from '@nanio/registry';
+import { FallbackRouter, LLMRegistry } from '@nanio/registry';
 import {
   runWithContext,
   newRequestContext,
@@ -489,6 +490,79 @@ async function runDemo() {
     // 12. Hash arguments demo
     const testArgs = { query: 'Microcity', limit: 5 };
     logger.info('Hashed operation arguments:', { raw: testArgs, hash: hashArgs(testArgs) });
+
+    // 13. Verify LLMRegistry and ChatConfig dynamic routing
+    logger.info('=== VERIFYING LLM REGISTRY & CHATCONFIG DYNAMIC ROUTING ===');
+
+    class MockModel extends BaseModel {
+      public name: string;
+      public failWithRateLimit = false;
+      public callCount = 0;
+
+      constructor(name: string) {
+        super();
+        this.name = name;
+      }
+
+      async generate(messages: Message[], options?: GenerateOptions): Promise<LLMResponse> {
+        this.callCount++;
+        if (this.failWithRateLimit) {
+          const err = new Error(`Rate limit hit on ${this.name}`);
+          err.name = 'RateLimitError';
+          throw err;
+        }
+        return {
+          content: `Response from ${this.name}`,
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 }
+        };
+      }
+    }
+
+    const primaryModel = new MockModel('primary-mock');
+    const lighterModel = new MockModel('lighter-mock');
+    const freeModel = new MockModel('free-mock');
+
+    const registry = new LLMRegistry(
+      [
+        { tier: 'PRIMARY', model: primaryModel, name: 'primary-mock' },
+        { tier: 'LIGHTER', model: lighterModel, name: 'lighter-mock' },
+        { tier: 'FREE', model: freeModel, name: 'free-mock' }
+      ],
+      costTracker
+    );
+
+    // Test A: Normal generation (starts at PRIMARY)
+    const resNormal = await registry.generate(
+      [{ role: 'user', content: 'hello' }],
+      { config: new ChatConfig({ userId: 'test-user', modelTier: 'PRIMARY' }) }
+    );
+    logger.info(`Normal generation result: ${resNormal.content} (Primary calls: ${primaryModel.callCount}, Lighter calls: ${lighterModel.callCount})`);
+
+    // Test B: RateLimit Failover (Primary fails, falls back to Lighter)
+    primaryModel.failWithRateLimit = true;
+    const resFailover = await registry.generate(
+      [{ role: 'user', content: 'hello failover' }],
+      { config: new ChatConfig({ userId: 'test-user', modelTier: 'PRIMARY' }) }
+    );
+    logger.info(`Failover generation result: ${resFailover.content} (Primary calls: ${primaryModel.callCount}, Lighter calls: ${lighterModel.callCount})`);
+
+    // Test C: Budget Throttling (Simulate THROTTLED status, skips PRIMARY directly to LIGHTER)
+    primaryModel.failWithRateLimit = false; // Reset
+    primaryModel.callCount = 0;
+    lighterModel.callCount = 0;
+
+    // Record high costs in costTracker/pgCostStore for 'throttled-user' to force budget throttle status
+    // FREE tier has limit of 0.20 USD. Let's record 0.195 USD to cross the 95% throttle threshold (0.19 USD)
+    await mockPg.query('INSERT INTO llm_cost_events', [
+      'chat', 'some-model', 'throttled-user', 'some-session', 'some-turn', 100000, 50000, '0.1950'
+    ]);
+
+
+    const resThrottled = await registry.generate(
+      [{ role: 'user', content: 'hello budget' }],
+      { config: new ChatConfig({ userId: 'throttled-user', userTier: 'FREE', modelTier: 'PRIMARY' }) }
+    );
+    logger.info(`Budget throttled generation result: ${resThrottled.content} (Primary calls: ${primaryModel.callCount}, Lighter calls: ${lighterModel.callCount})`);
   });
 
   logger.info('=== DEMO EXECUTION COMPLETE ===');

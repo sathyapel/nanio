@@ -1,4 +1,4 @@
-import { BaseModel, Message, LLMResponse, GenerateOptions } from '@nanio/core';
+import { BaseModel, Message, LLMResponse, GenerateOptions, ChatConfig } from '@nanio/core';
 import { getContext, getLogger, Events } from '@nanio/observability';
 
 const logger = getLogger('BaseAIClient');
@@ -149,6 +149,25 @@ export abstract class BaseAIClient extends BaseModel {
   abstract generate(messages: Message[], options?: GenerateOptions): Promise<LLMResponse>;
   abstract countTokens(messages: string | Message[]): Promise<number>;
 
+  async chatComplete(messages: Message[], options?: GenerateOptions): Promise<string> {
+    const res = await this.generate(messages, options);
+    return res.content;
+  }
+
+  async chatJson(messages: Message[], options?: GenerateOptions): Promise<any> {
+    const config = options?.config || new ChatConfig();
+    config.jsonMode = true;
+    const res = await this.generate(messages, {
+      ...options,
+      config
+    });
+    try {
+      return JSON.parse(res.content);
+    } catch (err) {
+      return { content: res.content };
+    }
+  }
+
   protected circuit: CircuitBreaker;
   protected rateLimiters: Record<string, RateLimiter>;
 
@@ -167,10 +186,13 @@ export abstract class BaseAIClient extends BaseModel {
       }
     });
 
-    // Limiters for FREE, PREMIUM, VIP tiers
+    // Limiters for all 6 tiers
     this.rateLimiters = {
       VIP: new RateLimiter(25.0, 1.0, 1.0, clientName, async (wait) => this.onRateLimitWait(wait)),
+      OPERATOR: new RateLimiter(25.0, 1.0, 1.0, clientName, async (wait) => this.onRateLimitWait(wait)),
       PREMIUM: new RateLimiter(15.0, 1.0, 3.0, clientName, async (wait) => this.onRateLimitWait(wait)),
+      CREATOR: new RateLimiter(15.0, 1.0, 3.0, clientName, async (wait) => this.onRateLimitWait(wait)),
+      PRO: new RateLimiter(12.0, 1.0, 5.0, clientName, async (wait) => this.onRateLimitWait(wait)),
       FREE: new RateLimiter(10.0, 1.0, 8.0, clientName, async (wait) => this.onRateLimitWait(wait))
     };
   }
