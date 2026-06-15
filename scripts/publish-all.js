@@ -8,7 +8,8 @@ const packages = [
   'packages/observability',
   'packages/registry',
   'packages/vectorstore',
-  'packages/providers'
+  'packages/providers',
+  'packages/ihr'
 ];
 
 function promptOtp() {
