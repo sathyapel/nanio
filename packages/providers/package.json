@@ -1,6 +1,6 @@
 {
   "name": "@nanio/providers",
-  "version": "0.0.1-alpha.1",
+  "version": "0.0.1-alpha.2",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -8,7 +8,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@nanio/core": "^0.0.1-alpha.1",
-    "@nanio/observability": "^0.0.1-alpha.1"
+    "@nanio/core": "^0.0.1-alpha.2",
+    "@nanio/observability": "^0.0.1-alpha.2"
   }
 }

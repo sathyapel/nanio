@@ -1,7 +1,7 @@
 # nanio
 
 > [!WARNING]
-> **Status: Alpha (Experimental)** — `nanio` is currently in active, experimental development. API surfaces are subject to change.
+> **Status: Alpha (Experimental)** — `nanio` is currently in active, experimental development. Current version: `0.0.1-alpha.2`. API surfaces are subject to change.
 
 🤝 **Collaborators & Contributors Needed!** We are actively looking for developers to join the project, contribute to the core architecture, add new database drivers, write providers, and refine agentic design patterns. Feel free to open issues or submit PRs!
 
@@ -195,7 +195,7 @@ IndexHydratedRAG is designed for complex document hierarchies where section rela
 
 ### Installation from NPM
 
-You can install the modular `@nanio` packages directly from the NPM registry using the `@alpha` tag:
+You can install the modular `@nanio` packages directly from the NPM registry using the `@alpha` tag (resolving to `0.0.1-alpha.2`):
 
 ```bash
 # Core package and observability layer
