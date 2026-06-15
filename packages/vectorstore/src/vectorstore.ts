@@ -1,6 +1,18 @@
 import { BaseEmbeddings } from '@nanio/embeddings';
 import pg from 'pg';
 import crypto from 'crypto';
+import fs from 'fs';
+import {
+  ZVecCollectionSchema,
+  ZVecCreateAndOpen,
+  ZVecOpen,
+  ZVecDataType,
+  ZVecIndexType,
+  ZVecMetricType
+} from '@zvec/zvec';
+import { getLogger } from '@nanio/observability';
+
+const vsLogger = getLogger('VectorStore');
 
 export interface Document {
   pageContent: string;
@@ -310,6 +322,132 @@ export class QdrantVectorStore extends BaseVectorStore {
       };
       return [doc, hit.score];
     });
+  }
+}
+
+/**
+ * A Zvec-backed persistent vector store.
+ */
+export class ZVecVectorStore extends BaseVectorStore {
+  private dimension: number = 0;
+
+  constructor(
+    embeddings: BaseEmbeddings,
+    private collectionPath: string,
+    private collectionName: string = 'documents'
+  ) {
+    super(embeddings);
+  }
+
+  private async getDimension(): Promise<number> {
+    if (this.dimension === 0) {
+      const dummyEmb = await this.embeddings.embedQuery("dummy");
+      this.dimension = dummyEmb.length;
+    }
+    return this.dimension;
+  }
+
+  private async getCollection(): Promise<any> {
+    const dim = await this.getDimension();
+    if (fs.existsSync(this.collectionPath)) {
+      return ZVecOpen(this.collectionPath);
+    }
+    const collectionSchema = new ZVecCollectionSchema({
+      name: this.collectionName,
+      fields: [
+        { name: "pageContent", dataType: ZVecDataType.STRING },
+        { name: "metadata", dataType: ZVecDataType.STRING }
+      ],
+      vectors: [
+        {
+          name: "embedding",
+          dataType: ZVecDataType.VECTOR_FP32,
+          dimension: dim,
+          indexParams: { indexType: ZVecIndexType.HNSW, metricType: ZVecMetricType.COSINE }
+        }
+      ]
+    });
+    return ZVecCreateAndOpen(this.collectionPath, collectionSchema);
+  }
+
+  async addDocuments(documents: Document[]): Promise<void> {
+    if (documents.length === 0) return;
+
+    const providerName = (this.embeddings as any).model || this.embeddings.constructor.name;
+    vsLogger.info('ZVecVectorStore: embedding documents', {
+      count: documents.length,
+      collectionPath: this.collectionPath,
+      embeddingProvider: providerName
+    });
+
+    const texts = documents.map(doc => doc.pageContent);
+    const vectors = await this.embeddings.embedDocuments(texts);
+
+    const collection = await this.getCollection();
+    try {
+      for (let i = 0; i < documents.length; i++) {
+        const docId = crypto.randomUUID();
+        collection.insertSync({
+          id: docId,
+          vectors: { "embedding": vectors[i] },
+          fields: {
+            "pageContent": documents[i].pageContent,
+            "metadata": JSON.stringify(documents[i].metadata || {})
+          }
+        });
+      }
+      collection.optimizeSync();
+      vsLogger.info('ZVecVectorStore: documents indexed and HNSW optimized', {
+        count: documents.length,
+        collectionPath: this.collectionPath
+      });
+    } finally {
+      collection.closeSync();
+    }
+  }
+
+  async similaritySearch(query: string, k: number = 4): Promise<Document[]> {
+    const results = await this.similaritySearchWithScore(query, k);
+    return results.map(([doc]) => doc);
+  }
+
+  async similaritySearchWithScore(query: string, k: number = 4): Promise<[Document, number][]> {
+    const providerName = (this.embeddings as any).model || this.embeddings.constructor.name;
+    vsLogger.info('ZVecVectorStore: similarity search', {
+      k,
+      collectionPath: this.collectionPath,
+      embeddingProvider: providerName
+    });
+
+    const queryVector = await this.embeddings.embedQuery(query);
+    const collection = await this.getCollection();
+    try {
+      const queryResult = await collection.query({
+        fieldName: "embedding",
+        vector: queryVector,
+        topk: k
+      });
+
+      if (!Array.isArray(queryResult)) return [];
+
+      vsLogger.info('ZVecVectorStore: search returned results', { count: queryResult.length });
+
+      return queryResult.map((res: any) => {
+        let metaObj = {};
+        try {
+          metaObj = res.fields?.metadata ? JSON.parse(res.fields.metadata) : {};
+        } catch {
+          // ignore
+        }
+        const doc: Document = {
+          pageContent: res.fields?.pageContent || '',
+          metadata: metaObj
+        };
+        return [doc, res.score];
+      });
+    } finally {
+      collection.closeSync();
+    }
   }
 }
 

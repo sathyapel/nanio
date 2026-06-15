@@ -10,11 +10,12 @@ A production-grade, lightweight, and modular TypeScript agentic framework design
 ## ✨ Key Features
 
 *   **Dynamic LLM Routing & Registry (`@nanio/registry`)**: Dynamically route LLM completions across multiple models and endpoints with custom router mapping, fallback lists, and tier-specific overrides.
-*   **IndexHydratedRAG (`@nanio/ihr`)**: Tree-structured RAG architecture implementing local `@zvec/zvec` collections for zero-server semantic indexing, local `@huggingface/transformers` feature extraction, contextual link expansion, hierarchical pruning, context token gating, and recursive ancestor tree climbing.
+*   **IndexHydratedRAG (`@nanio/ihr`)**: Tree-structured RAG architecture implementing local `@zvec/zvec` collections for zero-server semantic indexing, pluggable embedding providers (Gemini, OpenAI, or local SentenceTransformers), contextual link expansion, hierarchical pruning, context token gating, and recursive ancestor tree climbing.
+*   **Pluggable Embeddings (`@nanio/embeddings`)**: Interchangeable `BaseEmbeddings` providers — **Gemini** (768-dim cloud), **OpenAI** (1536/3072-dim cloud), and **TransformersEmbeddings** (384-dim local ONNX, no API key). All three work identically in IHR and ZVecVectorStore.
 *   **Minimal & Modular Tools (`@nanio/tools`)**: Standardized, lightweight function schemas powered by Zod validation, making it easy to expose custom capabilities to LLMs.
 *   **Resilient AI Providers (`@nanio/providers`)**: Native REST clients for **Gemini, OpenAI, Claude, and xAI (Grok)** equipped with token-bucket rate limiters (supporting VIP tiers), circuit breakers to isolate downstream failures, and exponential retries with jitter.
-*   **Pluggable Database Persistence**: Drivers for similarity searching (**PgVector, MongoDB, and Qdrant REST**), PostgreSQL-backed session memory repositories, cost configurations, and metric counters.
-*   **Structured JSON Observability (`@nanio/observability`)**: Seamless request context propagation using Node's `AsyncLocalStorage`, automatic PII/secret scrubbing (regex-based sanitization for emails, phone numbers, and keys), and execution budgets.
+*   **Pluggable Vector Stores (`@nanio/vectorstore`)**: Similarity search via **ZVecVectorStore** (local HNSW, no server), **PgVector**, **MongoDB**, and **Qdrant REST** — all accept any `BaseEmbeddings` provider.
+*   **Structured JSON Observability (`@nanio/observability`)**: Seamless request context propagation using Node's `AsyncLocalStorage`, automatic PII/secret scrubbing (regex-based sanitization for emails, phone numbers, and keys), structured latency profiling via `timeOperation`, and execution cost budgets.
 
 
 ## 📦 Package Architecture
@@ -22,13 +23,13 @@ A production-grade, lightweight, and modular TypeScript agentic framework design
 `nanio` is organized as a monorepo containing the following packages under `/packages`:
 
 *   **`@nanio/core`**: Core model interfaces (`BaseModel`, `BaseMemory`), Pg-backed chat memory, and config repositories.
-*   **`@nanio/observability`**: Structured JSON logging (with automatic PII/secret scrubbing), request context propagation using `AsyncLocalStorage`, and pluggable performance telemetry / cost-budget trackers (Postgres, Mongo, Redis, Memory).
+*   **`@nanio/observability`**: Structured JSON logging (with automatic PII/secret scrubbing), request context propagation using `AsyncLocalStorage`, `timeOperation` latency profiler, and pluggable performance telemetry / cost-budget trackers (Postgres, Mongo, Redis, Memory).
 *   **`@nanio/providers`**: Resilient clients for Gemini, OpenAI, Claude, and xAI (Grok Chat & Image generation) implementing token buckets, circuit breakers, and exponential backoff retry policies.
-*   **`@nanio/embeddings`**: Standard and batch-optimized embeddings (Gemini batch embedding, local Transformers embeddings).
-*   **`@nanio/vectorstore`**: Pluggable similarity searches (Memory, MongoDB, PgVector, and Qdrant REST).
+*   **`@nanio/embeddings`**: Three interchangeable `BaseEmbeddings` providers — `GeminiEmbeddings` (768-dim, cloud), `OpenAIEmbeddings` (1536-dim, cloud), `TransformersEmbeddings` (384-dim, local ONNX). Swap providers in any consumer with zero other changes.
+*   **`@nanio/vectorstore`**: Pluggable similarity searches — `ZVecVectorStore` (local HNSW, zero-server), `MemoryVectorStore`, `MongoVectorStore`, `PgVectorStore`, `QdrantVectorStore`. All accept any `BaseEmbeddings`.
 *   **`@nanio/registry`**: Model provider routers with fallback mechanisms.
 *   **`@nanio/tools`**: Executable function schemas.
-*   **`@nanio/ihr`**: IndexHydratedRAG implementation using embedded Zvec vector search and relational SQL tables.
+*   **`@nanio/ihr`**: IndexHydratedRAG implementation using embedded Zvec vector search, pluggable `BaseEmbeddings`, relational SQL tables, and structured observability.
 
 ## 💡 Quick Examples
 
@@ -68,27 +69,87 @@ const response = await registry.generate(
 console.log(response.content);
 ```
 
-### 2. IndexHydratedRAG (IHR) with Embedded Zvec Index
+### 2. Pluggable Embedding Providers
 
-Here is an example showing how to ingest a document outline tree and perform IndexHydratedRAG queries using local Zvec vector storage and local SentenceTransformer model embeddings:
+All three providers share the same `BaseEmbeddings` interface and are interchangeable in any consumer:
+
+```typescript
+import { GeminiEmbeddings, OpenAIEmbeddings, TransformersEmbeddings } from '@nanio/embeddings';
+
+// Cloud: Google Gemini — 768-dimensional vectors (batch API)
+const gemini = new GeminiEmbeddings('gemini-embedding-001', { apiKey: process.env.GEMINI_API_KEY });
+
+// Cloud: OpenAI — 1536-dimensional vectors (text-embedding-3-small)
+//                 3072-dimensional vectors (text-embedding-3-large)
+const openai = new OpenAIEmbeddings('text-embedding-3-small', { apiKey: process.env.OPENAI_API_KEY });
+
+// Local: SentenceTransformers via ONNX Runtime — 384-dimensional, no API key needed
+const local = new TransformersEmbeddings('Xenova/all-MiniLM-L6-v2');
+
+// Any of the three can be passed to ZVecVectorStore, IHR, PgVectorStore, etc.
+const embedding = await local.embedQuery('TypeScript agentic framework');
+console.log(`Dimension: ${embedding.length}`); // 384
+```
+
+### 3. ZVec Vector Store — Chat RAG with Any Provider
+
+`ZVecVectorStore` uses local HNSW indexing (no server required). Pass any `BaseEmbeddings` provider and the dimension is auto-detected:
+
+```typescript
+import { ZVecVectorStore } from '@nanio/vectorstore';
+import { GeminiEmbeddings, TransformersEmbeddings } from '@nanio/embeddings';
+
+// --- Option A: ZVec + GeminiEmbeddings (cloud, 768-dim) ---
+const geminiEmbeddings = new GeminiEmbeddings('gemini-embedding-001');
+const geminiStore = new ZVecVectorStore(geminiEmbeddings, './zvec_data/chat_gemini', 'chat_kb');
+
+await geminiStore.addDocuments([
+  { pageContent: 'Nanio supports GeminiEmbeddings for cloud-scale retrieval.', metadata: { provider: 'gemini' } },
+  { pageContent: 'ZVecVectorStore stores HNSW indices locally on disk.', metadata: { provider: 'zvec' } }
+]);
+
+const results = await geminiStore.similaritySearch('cloud semantic search', 2);
+console.log(results[0].pageContent);
+
+// --- Option B: ZVec + TransformersEmbeddings (local, 384-dim, no API key) ---
+const localEmbeddings = new TransformersEmbeddings('Xenova/all-MiniLM-L6-v2');
+const localStore = new ZVecVectorStore(localEmbeddings, './zvec_data/chat_local', 'chat_local_kb');
+
+await localStore.addDocuments([
+  { pageContent: 'Local embeddings run fully offline with no API key.', metadata: { provider: 'transformers' } }
+]);
+
+const localResults = await localStore.similaritySearch('offline embedding', 1);
+console.log(localResults[0].pageContent);
+```
+
+### 4. IndexHydratedRAG (IHR) with Embedded Zvec Index
+
+IHR accepts **any `BaseEmbeddings` provider** — swap Gemini for local Transformers or OpenAI with no other code changes. The `embeddingProvider` field is emitted in all structured log lines:
 
 ```typescript
 import pg from 'pg';
 import { GeminiModel } from '@nanio/providers';
-import { TransformersEmbeddings } from '@nanio/embeddings';
+import { GeminiEmbeddings, TransformersEmbeddings } from '@nanio/embeddings';
 import { IndexHydratedRAG, IngestSection } from '@nanio/ihr';
 
-// 1. Initialize DB client and local embeddings
-const db = new pg.Client("postgresql://localhost:5432/nanio");
+const db = new pg.Client('postgresql://localhost:5432/nanio');
 await db.connect();
 
-const embeddings = new TransformersEmbeddings('Xenova/all-MiniLM-L6-v2');
-const model = new GeminiModel('gemini-2.0-flash');
+// --- Option A: Cloud provider (Gemini, 768-dim) ---
+const cloudEmbeddings = new GeminiEmbeddings('gemini-embedding-001');
 
-const ihr = new IndexHydratedRAG(db, embeddings, model);
+// --- Option B: Local provider (SentenceTransformers, 384-dim, no API key) ---
+// const cloudEmbeddings = new TransformersEmbeddings('Xenova/all-MiniLM-L6-v2');
+
+const model = new GeminiModel('gemini-2.0-flash');
+const ihr = new IndexHydratedRAG(db, cloudEmbeddings, model);
+
+// Log shows: "embeddingProvider": "gemini-embedding-001"
+console.log('Provider:', ihr.embeddingProviderName);
+
 await ihr.initializeSchema();
 
-// 2. Ingest structured document outline tree
 const sections: IngestSection[] = [
   {
     section_id: '1',
@@ -110,11 +171,12 @@ const sections: IngestSection[] = [
 
 await ihr.ingest('doc_123', 'Nanio Specifications', 'https://nanio.dev/specs', sections);
 
-// 3. Query the collection (runs fast path, TF-IDF gating, pruning, and ancestor climbing)
+// Retrieve: runs fast path, TF-IDF gating, subtree pruning, and ancestor climbing
 const response = await ihr.retrieve('Explain the core architecture.', 'doc_123');
 
 console.log('Answer:', response.answer);
 console.log('Context Tree Lineage:', response.context);
+console.log('Path used:', response.path); // 'fast' | 'tfidf'
 ```
 
 ## 🚀 Getting Started
@@ -130,8 +192,8 @@ npm install @nanio/core@alpha @nanio/observability@alpha
 # Provider clients, embeddings, and vector stores
 npm install @nanio/providers@alpha @nanio/embeddings@alpha @nanio/vectorstore@alpha
 
-# Registry and tools
-npm install @nanio/registry@alpha @nanio/tools@alpha
+# IndexHydratedRAG, Registry, and Tools
+npm install @nanio/ihr@alpha @nanio/registry@alpha @nanio/tools@alpha
 ```
 
 ### Local Workspace Development
@@ -148,7 +210,7 @@ If you are developing locally inside this monorepo:
    npm run build
    ```
 
-3. Run the integrated Postgres/Qdrant/Model verification example:
+3. Run the integrated verification example (Postgres mock, Qdrant mock, ZVec, IHR, multi-provider):
    ```bash
    node packages/examples/dist/main.js
    ```

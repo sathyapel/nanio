@@ -1,4 +1,5 @@
 import * as dotenv from 'dotenv';
+import fs from 'fs';
 import { z } from 'zod';
 import { 
   SimpleAgent, 
@@ -13,8 +14,8 @@ import {
 } from '@nanio/core';
 import { FunctionTool } from '@nanio/tools';
 import { GeminiModel, BaseAIClient, ClaudeModel, XAIModel, XAIImageClient } from '@nanio/providers';
-import { GeminiEmbeddings, TransformersEmbeddings } from '@nanio/embeddings';
-import { MemoryVectorStore, MongoVectorStore, PgVectorStore, QdrantVectorStore, Document } from '@nanio/vectorstore';
+import { GeminiEmbeddings, TransformersEmbeddings, OpenAIEmbeddings } from '@nanio/embeddings';
+import { MemoryVectorStore, MongoVectorStore, PgVectorStore, QdrantVectorStore, ZVecVectorStore, Document } from '@nanio/vectorstore';
 import { FallbackRouter, LLMRegistry } from '@nanio/registry';
 import { IndexHydratedRAG, IngestSection } from '@nanio/ihr';
 import {
@@ -596,7 +597,82 @@ async function runDemo() {
     await qdrantStore.addDocuments(docItems);
     const qdrantResults = await qdrantStore.similaritySearch('typescript agentic framework');
     logger.info('Search results retrieved from Qdrant REST:', { results: qdrantResults });
+    // 8b. Verify ZVecVectorStore persistence
+    logger.info('Initializing RAG database with ZVecVectorStore...');
+    const zvecPath = './zvec_data/test_vector_store';
+    // Clean old collection directory if exists
+    fs.rmSync(zvecPath, { recursive: true, force: true });
+    const zvecStore = new ZVecVectorStore(embeddings, zvecPath);
+    await zvecStore.addDocuments(docItems);
+    const zvecResults = await zvecStore.similaritySearch('Where is the capital of Nanio Land?');
+    logger.info('Search results retrieved from ZVecVectorStore:', { results: zvecResults });
 
+    // -----------------------------------------------------------------------
+    // 8c. ZVec + GeminiEmbeddings Chat Integration
+    //     Shows ZVecVectorStore used as a chat knowledge-base with the Gemini
+    //     cloud embedding provider. Uses the same 768-dim mock for demo stability.
+    // -----------------------------------------------------------------------
+    logger.info('=== 8c. ZVec + GeminiEmbeddings Chat Integration ===');
+    const geminiChatZvecPath = './zvec_data/chat_gemini';
+    fs.rmSync(geminiChatZvecPath, { recursive: true, force: true });
+    // GeminiEmbeddings provider (768-dim) — mock embedQuery/embedDocuments for offline demo
+    const geminiChatEmbeddings = new GeminiEmbeddings('gemini-embedding-001', { apiKey: 'demo' });
+    geminiChatEmbeddings.embedQuery = async () => Array.from({ length: 768 }, () => Math.random());
+    geminiChatEmbeddings.embedDocuments = async (texts) => texts.map(() => Array.from({ length: 768 }, () => Math.random()));
+
+    const geminiZvecStore = new ZVecVectorStore(geminiChatEmbeddings, geminiChatZvecPath, 'chat_gemini');
+    await geminiZvecStore.addDocuments([
+      { pageContent: 'Nanio uses GeminiEmbeddings for cloud-scale semantic retrieval.', metadata: { source: 'docs', provider: 'gemini-embedding-001' } },
+      { pageContent: 'ZVecVectorStore provides local HNSW indexing for millisecond retrieval.', metadata: { source: 'docs', provider: 'zvec' } },
+      { pageContent: 'GeminiEmbeddings produces 768-dimensional vectors via batchEmbedContents API.', metadata: { source: 'api-ref', provider: 'gemini-embedding-001' } }
+    ]);
+    const geminiChatResults = await geminiZvecStore.similaritySearch('cloud embedding semantic search', 2);
+    logger.info('ZVec + GeminiEmbeddings chat RAG results:', {
+      provider: geminiChatEmbeddings.model,
+      topK: 2,
+      results: geminiChatResults.map(d => d.pageContent)
+    });
+
+    // -----------------------------------------------------------------------
+    // 8d. ZVec + TransformersEmbeddings Chat Integration (local, no API key)
+    //     Shows ZVecVectorStore used as a chat knowledge-base with the local
+    //     SentenceTransformers provider. Uses 384-dim mock for demo stability.
+    //     In production, replace the mock overrides with the real TransformersEmbeddings
+    //     instance and it will download the ONNX model on first call.
+    // -----------------------------------------------------------------------
+    logger.info('=== 8d. ZVec + TransformersEmbeddings Chat Integration (local) ===');
+    const localChatZvecPath = './zvec_data/chat_local';
+    fs.rmSync(localChatZvecPath, { recursive: true, force: true });
+    // TransformersEmbeddings provider (384-dim, Xenova/all-MiniLM-L6-v2)
+    // Mock for demo: in production drop the overrides and use real ONNX inference
+    const localChatEmbeddings = new TransformersEmbeddings('Xenova/all-MiniLM-L6-v2');
+    localChatEmbeddings.embedQuery = async () => Array.from({ length: 384 }, () => Math.random());
+    localChatEmbeddings.embedDocuments = async (texts) => texts.map(() => Array.from({ length: 384 }, () => Math.random()));
+
+    const localZvecStore = new ZVecVectorStore(localChatEmbeddings, localChatZvecPath, 'chat_local');
+    await localZvecStore.addDocuments([
+      { pageContent: 'TransformersEmbeddings runs entirely offline using Hugging Face ONNX Runtime.', metadata: { source: 'docs', provider: 'Xenova/all-MiniLM-L6-v2' } },
+      { pageContent: 'SentenceTransformers all-MiniLM-L6-v2 produces 384-dimensional normalized vectors.', metadata: { source: 'model-card', provider: 'Xenova/all-MiniLM-L6-v2' } },
+      { pageContent: 'Local embeddings require no API key and respect data privacy.', metadata: { source: 'docs', provider: 'Xenova/all-MiniLM-L6-v2' } }
+    ]);
+    const localChatResults = await localZvecStore.similaritySearch('local embedding no api key', 2);
+    logger.info('ZVec + TransformersEmbeddings chat RAG results:', {
+      provider: localChatEmbeddings.model,
+      topK: 2,
+      results: localChatResults.map(d => d.pageContent)
+    });
+
+    // Summary: ZVec accepts any BaseEmbeddings provider — Gemini (cloud, 768-dim),
+    // OpenAI (cloud, 1536-dim), or TransformersEmbeddings (local, 384-dim).
+    // Swap the provider in the ZVecVectorStore constructor with zero other changes.
+    logger.info('Provider swap summary:', {
+      geminiProvider: geminiChatEmbeddings.model,
+      geminiDim: 768,
+      localProvider: localChatEmbeddings.model,
+      localDim: 384,
+      openAIProvider: new OpenAIEmbeddings('text-embedding-3-small').model,
+      openAIDim: 1536
+    });
     // 9. Verify LLM Config Repository
     logger.info('Initializing PgLLMConfigRepository...');
     const configRepo = new PgLLMConfigRepository(mockPg);
@@ -843,6 +919,46 @@ async function runDemo() {
       retrieved: responseTfidf.retrievedSections
     });
     logger.info('Context tree lineage for LLM:\n' + responseTfidf.context);
+
+    // -----------------------------------------------------------------------
+    // 15. Multi-Provider IHR — GeminiEmbeddings (768-dim cloud)
+    //     Demonstrates IHR.ingest() and IHR.retrieve() with GeminiEmbeddings
+    //     instead of TransformersEmbeddings. The embeddingProvider field in the
+    //     structured logs will show 'gemini-embedding-001' instead of
+    //     'Xenova/all-MiniLM-L6-v2', confirming pluggable provider swap.
+    //     ZVecVectorStore dimension is auto-detected on first embedQuery call.
+    // -----------------------------------------------------------------------
+    logger.info('=== 15. IHR Multi-Provider Demo: GeminiEmbeddings (768-dim) ===');
+    const geminiIhrEmbeddings = new GeminiEmbeddings('gemini-embedding-001', { apiKey: 'demo' });
+    // Mock 768-dim for offline demo stability
+    geminiIhrEmbeddings.embedQuery = async () => Array.from({ length: 768 }, () => Math.random());
+    geminiIhrEmbeddings.embedDocuments = async (texts) => texts.map(() => Array.from({ length: 768 }, () => Math.random()));
+
+    const geminiMockPg = new MockPgClient() as any;
+    const ihrGemini = new IndexHydratedRAG(geminiMockPg, geminiIhrEmbeddings, ihrModel);
+    await ihrGemini.initializeSchema();
+
+    const docIdGemini = 'doc_gemini_provider_demo';
+    await ihrGemini.ingest(docIdGemini, 'Gemini Provider Test Doc', 'https://nanio.dev/gemini-test', sections);
+    logger.info('IHR ingestion with GeminiEmbeddings complete', {
+      provider: ihrGemini.embeddingProviderName,
+      dim: 768,
+      docId: docIdGemini
+    });
+
+    const geminiIhrResponse = await ihrGemini.retrieve('Explain the context gating architecture.', docIdGemini);
+    logger.info('IHR + GeminiEmbeddings retrieval result:', {
+      provider: ihrGemini.embeddingProviderName,
+      path: geminiIhrResponse.path,
+      retrieved: geminiIhrResponse.retrievedSections,
+      answerSnippet: geminiIhrResponse.answer.slice(0, 80)
+    });
+
+    // Verify provider swap is logged — TransformersEmbeddings IHR (already tested in section 14)
+    logger.info('IHR provider comparison:', {
+      section14Provider: ihr.embeddingProviderName,  // Xenova/all-MiniLM-L6-v2
+      section15Provider: ihrGemini.embeddingProviderName  // gemini-embedding-001
+    });
   });
 
   logger.info('=== DEMO EXECUTION COMPLETE ===');

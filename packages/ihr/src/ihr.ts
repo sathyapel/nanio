@@ -10,6 +10,9 @@ import {
   ZVecIndexType,
   ZVecMetricType
 } from '@zvec/zvec';
+import { getLogger, timeOperation } from '@nanio/observability';
+
+const logger = getLogger('IndexHydratedRAG');
 
 export interface IngestSection {
   section_id: string;
@@ -24,6 +27,7 @@ export interface RetrieveOptions {
   limit?: number;
   tfidfLimit?: number;
   alwaysRunTfidf?: boolean;
+  stopwords?: Set<string>;
 }
 
 export interface RetrieveResponse {
@@ -50,63 +54,77 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
+export const DEFAULT_STOPWORDS = new Set([
+  'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', 'your', 'yours',
+  'yourself', 'yourselves', 'he', 'him', 'his', 'himself', 'she', 'her', 'hers',
+  'herself', 'it', 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves',
+  'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those', 'am', 'is', 'are',
+  'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'having', 'do', 'does',
+  'did', 'doing', 'a', 'an', 'the', 'and', 'but', 'if', 'or', 'because', 'as', 'until',
+  'while', 'of', 'at', 'by', 'for', 'with', 'about', 'against', 'between', 'into',
+  'through', 'during', 'before', 'after', 'above', 'below', 'to', 'from', 'up', 'down',
+  'in', 'out', 'on', 'off', 'over', 'under', 'again', 'further', 'then', 'once', 'here',
+  'there', 'when', 'where', 'why', 'how', 'all', 'any', 'both', 'each', 'few', 'more',
+  'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so',
+  'than', 'too', 'very', 's', 't', 'can', 'will', 'just', 'don', 'should', 'now'
+]);
+
 /**
- * Tokenizes text by lowercasing, stripping punctuation, and removing English stopwords.
+ * Tokenizes text by lowercasing, converting punctuation to spaces, and removing English stopwords.
  */
-export function tokenize(text: string): string[] {
-  const stopwords = new Set([
-    'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', 'your', 'yours',
-    'yourself', 'yourselves', 'he', 'him', 'his', 'himself', 'she', 'her', 'hers',
-    'herself', 'it', 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves',
-    'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those', 'am', 'is', 'are',
-    'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'having', 'do', 'does',
-    'did', 'doing', 'a', 'an', 'the', 'and', 'but', 'if', 'or', 'because', 'as', 'until',
-    'while', 'of', 'at', 'by', 'for', 'with', 'about', 'against', 'between', 'into',
-    'through', 'during', 'before', 'after', 'above', 'below', 'to', 'from', 'up', 'down',
-    'in', 'out', 'on', 'off', 'over', 'under', 'again', 'further', 'then', 'once', 'here',
-    'there', 'when', 'where', 'why', 'how', 'all', 'any', 'both', 'each', 'few', 'more',
-    'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so',
-    'than', 'too', 'very', 's', 't', 'can', 'will', 'just', 'don', 'should', 'now'
-  ]);
+export function tokenize(text: string, stopwords: Set<string> = DEFAULT_STOPWORDS): string[] {
   return text
     .toLowerCase()
-    .replace(/[^\w\s]/g, '')
+    .replace(/[^\w\s]/g, ' ')
     .split(/\s+/)
     .filter(t => t.length > 0 && !stopwords.has(t));
 }
 
 /**
  * Calculates TF-IDF scores for full text items relative to query terms.
+ *
+ * Performance: O(S·T) where S = sections, T = unique query terms.
+ * Each section is tokenized once and stored as a frequency-map + Set,
+ * giving O(1) TF lookups (via freq map) and O(1) IDF doc-frequency checks
+ * (via Set.has) — replacing the original O(S·M) filter+includes approach.
  */
 export function tfidfScore(
   query: string,
-  sections: { section_id: string; text: string }[]
+  sections: { section_id: string; text: string }[],
+  stopwords: Set<string> = DEFAULT_STOPWORDS
 ): { section_id: string; score: number }[] {
-  const qterms = tokenize(query);
+  const qterms = tokenize(query, stopwords);
   if (qterms.length === 0 || sections.length === 0) {
     return sections.map(s => ({ section_id: s.section_id, score: 0 }));
   }
 
-  // 1. Pre-tokenize all section texts
-  const tokenizedSections = sections.map(s => ({
-    section_id: s.section_id,
-    terms: tokenize(s.text)
-  }));
+  // 1. Tokenize once per section and build a frequency map + term Set
+  //    freq map: { term → count } for O(1) TF retrieval
+  //    termSet: Set<term>       for O(1) IDF doc-frequency check
+  const sectionData = sections.map(s => {
+    const terms = tokenize(s.text, stopwords);
+    const termSet = new Set(terms);
+    const freq: Record<string, number> = {};
+    for (const t of terms) freq[t] = (freq[t] || 0) + 1;
+    return { section_id: s.section_id, terms, termSet, freq };
+  });
 
-  // 2. Compute IDF for each query term
+  // 2. Compute IDF for each unique query term using Set.has() — O(1) per section
+  //    Smooth non-negative formulation: log(1 + N / (1 + df))
+  //    Ensures IDF ≥ 0 even when a term appears in every document.
   const idf: Record<string, number> = {};
   for (const t of qterms) {
-    const matchingDocsCount = tokenizedSections.filter(s => s.terms.includes(t)).length;
-    idf[t] = Math.log(sections.length / (1 + matchingDocsCount));
+    const matchingDocsCount = sectionData.filter(s => s.termSet.has(t)).length;
+    idf[t] = Math.log(1 + sections.length / (1 + matchingDocsCount));
   }
 
-  // 3. Score each section
-  const scored = tokenizedSections.map(({ section_id, terms }) => {
+  // 3. Score each section using the freq map — no array scanning per term
+  const scored = sectionData.map(({ section_id, terms, freq }) => {
     if (terms.length === 0) return { section_id, score: 0 };
     let score = 0;
     for (const t of qterms) {
-      const termFreq = terms.filter(x => x === t).length;
-      const tf = termFreq / terms.length;
+      // tf = count(t in doc) / total terms in doc — O(1) via freq map
+      const tf = (freq[t] || 0) / terms.length;
       score += tf * (idf[t] || 0);
     }
     return { section_id, score };
@@ -138,6 +156,15 @@ export class IndexHydratedRAG {
     private embeddings: BaseEmbeddings,
     private model: BaseModel
   ) {}
+
+  /**
+   * Returns a human-readable name for the active embedding provider.
+   * Uses the `model` property (present on GeminiEmbeddings, OpenAIEmbeddings,
+   * TransformersEmbeddings) or falls back to the class constructor name.
+   */
+  get embeddingProviderName(): string {
+    return (this.embeddings as any).model || this.embeddings.constructor.name;
+  }
 
   /**
    * Initializes the database schema for IndexHydratedRAG.
@@ -231,6 +258,14 @@ export class IndexHydratedRAG {
     url: string,
     sections: IngestSection[]
   ): Promise<void> {
+    logger.info('Starting structured document tree ingestion', {
+      docId,
+      title,
+      url,
+      sectionsCount: sections.length,
+      embeddingProvider: this.embeddingProviderName
+    });
+
     // 1. Write document entry in PostgreSQL
     await this.db.query(
       `INSERT INTO documents (id, title, source_url) 
@@ -284,15 +319,19 @@ Example output format:
   }
 }`;
 
-    const mapResponse = await this.model.generate([
-      { role: 'user', content: outlinePrompt }
-    ], { config: new ChatConfig({ jsonMode: true }) });
+    const { result: mapResponse, elapsedMs: mapElapsedMs } = await timeOperation(
+      async () => {
+        return await this.model.generate([
+          { role: 'user', content: outlinePrompt }
+        ], { config: new ChatConfig({ jsonMode: true }) });
+      }
+    );
 
     let relationshipMap: Record<string, { related_ids?: string[], sibling_ids?: string[], prerequisite_ids?: string[] }> = {};
     try {
       relationshipMap = JSON.parse(mapResponse.content);
     } catch (err) {
-      console.warn('Could not parse outline structure LLM response. Defaulting relationships to empty.', err);
+      logger.warn('Could not parse outline structure LLM response. Defaulting relationships to empty.', { error: err instanceof Error ? err.message : String(err) });
     }
 
     // 5. Generate embeddings of enriched section text (Title + Heading + Body snippet)
@@ -300,7 +339,12 @@ Example output format:
       const bodySnippet = s.summary || s.content.slice(0, 200);
       return `${title} — ${s.heading}. ${bodySnippet}`;
     });
-    const embeddingsArray = await this.embeddings.embedDocuments(richTexts);
+    
+    const { result: embeddingsArray, elapsedMs: embedElapsedMs } = await timeOperation(
+      async () => {
+        return await this.embeddings.embedDocuments(richTexts);
+      }
+    );
 
     // 6. Setup local zvec collection folder, cleaning previous data first for idempotency
     const collectionDir = `./zvec_data/${docId}`;
@@ -332,16 +376,22 @@ Example output format:
 
       // 8. Optimize HNSW index
       collection.optimizeSync();
+      logger.info('Structured document tree ingestion and indexing completed successfully', {
+        docId,
+        sectionsCount: sections.length,
+        relationshipsFound: Object.keys(relationshipMap).length
+      });
     } finally {
       collection.closeSync();
     }
   }
 
-  /**
-   * Helper to perform similarity search over the zvec collection.
-   */
   private async performSimilaritySearch(docId: string, query: string, limit: number): Promise<string[]> {
-    const queryEmbedding = await this.embeddings.embedQuery(query);
+    const { result: queryEmbedding } = await timeOperation(
+      async () => {
+        return await this.embeddings.embedQuery(query);
+      }
+    );
     const collection = await this.getZvecCollection(docId);
     try {
       const queryResult = await collection.query({
@@ -365,6 +415,12 @@ Example output format:
     docId: string,
     options?: RetrieveOptions
   ): Promise<RetrieveResponse> {
+    logger.info('Starting tree-structure context retrieval (IHR)', {
+      query,
+      docId,
+      limit: options?.limit,
+      embeddingProvider: this.embeddingProviderName
+    });
     const limit = options?.limit ?? 5;
     const tfidfLimit = options?.tfidfLimit ?? 3;
     const alwaysRunTfidf = options?.alwaysRunTfidf ?? false;
@@ -398,10 +454,14 @@ Return a JSON object containing:
 
     let attempts = 0;
     const maxAttempts = 3;
-    let response = await this.model.generate(messages, {
-      tools: [searchTool],
-      config: new ChatConfig({ jsonMode: true })
-    });
+    let { result: response } = await timeOperation(
+      async () => {
+        return await this.model.generate(messages, {
+          tools: [searchTool],
+          config: new ChatConfig({ jsonMode: true })
+        });
+      }
+    );
 
     while (response.toolCalls && response.toolCalls.length > 0 && attempts < maxAttempts) {
       attempts++;
@@ -432,10 +492,15 @@ Return a JSON object containing:
         }
       }
 
-      response = await this.model.generate(messages, {
-        tools: [searchTool],
-        config: new ChatConfig({ jsonMode: true })
-      });
+      const agentRes = await timeOperation(
+        async () => {
+          return await this.model.generate(messages, {
+            tools: [searchTool],
+            config: new ChatConfig({ jsonMode: true })
+          });
+        }
+      );
+      response = agentRes.result;
     }
 
     let hitIds: string[] = [];
@@ -505,6 +570,14 @@ Return a JSON object containing:
     let finalDbIds = prunedDbIds;
     let pathUsed: 'fast' | 'tfidf' = 'fast';
 
+    logger.info('Context window budget status', {
+      docId,
+      prunedDbIdsCount: prunedDbIds.length,
+      totalChars,
+      estimatedTokens,
+      alwaysRunTfidf
+    });
+
     if (alwaysRunTfidf || estimatedTokens > 6000) {
       pathUsed = 'tfidf';
       // Fetch full content texts for candidates
@@ -518,22 +591,29 @@ Return a JSON object containing:
         text: `${row.heading || ''} ${row.content || ''}`
       }));
 
-      const ranked = tfidfScore(query, candidateTexts);
+      const { result: ranked, elapsedMs: tfidfElapsed } = await timeOperation(
+        async () => tfidfScore(query, candidateTexts, options?.stopwords)
+      );
       finalDbIds = ranked.slice(0, tfidfLimit).map(r => r.section_id);
+      logger.info('TF-IDF re-ranking completed', { docId, tfidfElapsedMs: tfidfElapsed });
     }
 
     // --- 3.4 Recursive heading lineage climbing ---
-    const treeRes = await this.db.query(
-      `WITH RECURSIVE ancestors AS (
-         SELECT id, doc_id, section_id, parent_id, level, heading, content
-         FROM section_table WHERE doc_id = $1 AND section_id = ANY($2)
-         UNION ALL
-         SELECT s.id, s.doc_id, s.section_id, s.parent_id, s.level, s.heading, s.content
-         FROM section_table s JOIN ancestors a ON s.doc_id = a.doc_id AND s.section_id = a.parent_id
-       )
-       SELECT DISTINCT id, section_id, parent_id, level, heading, content
-       FROM ancestors ORDER BY level ASC, section_id;`,
-      [docId, finalDbIds]
+    const { result: treeRes, elapsedMs: climbElapsed } = await timeOperation(
+      async () => {
+        return await this.db.query(
+          `WITH RECURSIVE ancestors AS (
+             SELECT id, doc_id, section_id, parent_id, level, heading, content
+             FROM section_table WHERE doc_id = $1 AND section_id = ANY($2)
+             UNION ALL
+             SELECT s.id, s.doc_id, s.section_id, s.parent_id, s.level, s.heading, s.content
+             FROM section_table s JOIN ancestors a ON s.doc_id = a.doc_id AND s.section_id = a.parent_id
+           )
+           SELECT DISTINCT id, section_id, parent_id, level, heading, content
+           FROM ancestors ORDER BY level ASC, section_id;`,
+          [docId, finalDbIds]
+        );
+      }
     );
 
     let contextStr = '';
@@ -559,9 +639,22 @@ ${contextStr}
 
 Query: ${query}`;
 
-    const answerResponse = await this.model.generate([
-      { role: 'user', content: finalPrompt }
-    ]);
+    const { result: answerResponse, elapsedMs: answerElapsed } = await timeOperation(
+      async () => {
+        return await this.model.generate([
+          { role: 'user', content: finalPrompt }
+        ]);
+      }
+    );
+
+    logger.info('Answer generated successfully (IHR)', {
+      docId,
+      path: pathUsed,
+      finalDbIdsCount: finalDbIds.length,
+      contextLength: contextStr.length,
+      climbElapsedMs: climbElapsed,
+      answerElapsedMs: answerElapsed
+    });
 
     return {
       answer: answerResponse.content,
