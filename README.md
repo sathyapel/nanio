@@ -10,7 +10,7 @@ A production-grade, lightweight, and modular TypeScript agentic framework design
 ## ✨ Key Features
 
 *   **Dynamic LLM Routing & Registry (`@nanio/registry`)**: Dynamically route LLM completions across multiple models and endpoints with custom router mapping, fallback lists, and tier-specific overrides.
-*   **IndexHydratedRAG (`@nanio/ihr`)**: Tree-structured RAG architecture implementing local `@zvec/zvec` collections for zero-server semantic indexing, pluggable embedding providers (Gemini, OpenAI, or local SentenceTransformers), contextual link expansion, hierarchical pruning, context token gating, and recursive ancestor tree climbing.
+*   **IndexHydratedRAG (`@nanio/ihr`)**: Tree-structured RAG architecture implementing local `@zvec/zvec` collections for zero-server semantic indexing, pluggable embedding providers (Gemini, OpenAI, or local SentenceTransformers), contextual link expansion, hierarchical pruning, unconditional TF-IDF cosine re-ranking (with bigrams), LLM-powered multi-lingual auto-stopword detection, and recursive ancestor tree climbing.
 *   **Pluggable Embeddings (`@nanio/embeddings`)**: Interchangeable `BaseEmbeddings` providers — **Gemini** (768-dim cloud), **OpenAI** (1536/3072-dim cloud), and **TransformersEmbeddings** (384-dim local ONNX, no API key). All three work identically in IHR and ZVecVectorStore.
 *   **Minimal & Modular Tools (`@nanio/tools`)**: Standardized, lightweight function schemas powered by Zod validation, making it easy to expose custom capabilities to LLMs.
 *   **Resilient AI Providers (`@nanio/providers`)**: Native REST clients for **Gemini, OpenAI, Claude, and xAI (Grok)** equipped with token-bucket rate limiters (supporting VIP tiers), circuit breakers to isolate downstream failures, and exponential retries with jitter.
@@ -171,13 +171,24 @@ const sections: IngestSection[] = [
 
 await ihr.ingest('doc_123', 'Nanio Specifications', 'https://nanio.dev/specs', sections);
 
-// Retrieve: runs fast path, TF-IDF gating, subtree pruning, and ancestor climbing
-const response = await ihr.retrieve('Explain the core architecture.', 'doc_123');
+// Retrieve: runs subtree pruning, LLM-powered auto-stopword detection, TF-IDF cosine re-ranking, and ancestor climbing
+const response = await ihr.retrieve('Explain the core architecture.', 'doc_123', {
+  autoStopwords: true // Automatically detects the corpus language via LLM and generates custom stopwords
+});
 
 console.log('Answer:', response.answer);
 console.log('Context Tree Lineage:', response.context);
-console.log('Path used:', response.path); // 'fast' | 'tfidf'
+console.log('Path used:', response.path); // Always 'tfidf'
 ```
+
+### 5. IndexHydratedRAG (IHR) Use Cases
+
+IndexHydratedRAG is designed for complex document hierarchies where section relationships (parent/sibling/ancestor outlines) are critical for LLM understanding:
+
+*   **Technical Outlines & Documentation Manuals**: When querying highly nested structural outlines (e.g. manuals with Section 1.2.1 under 1.2). Ancestor climbing reconstructs the outline path so the LLM retains full architectural context.
+*   **Multi-Lingual Publications & Books**: LLM-powered automatic stopword generation detects the primary language of the retrieved corpus (e.g. French, Spanish, German) dynamically, generating language-specific stopwords on the fly to yield precise keyword matching for TF-IDF re-ranking.
+*   **Legal Contracts & Compliance Documents**: Navigating clauses, sub-clauses, and cross-references. Subtree pruning deduplicates overlapping parent-child text hierarchies to fit context budgets while keeping the logical document sequence intact.
+*   **Medical Diagnostic Manuals**: Querying clinical structures where keyword alignment is paramount. Unconditional TF-IDF cosine re-ranking uses a vocabulary of unigrams and bigrams fitted across candidates to elevate exact matches.
 
 ## 🚀 Getting Started
 
