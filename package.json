@@ -1,0 +1,19 @@
+{
+  "name": "nanio-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "tsx": "^4.11.0",
+    "@types/node": "^20.12.12",
+    "mongodb": "^6.5.0",
+    "ioredis": "^5.4.1"
+  }
+}

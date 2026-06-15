@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "composite": true
+  },
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/observability" },
+    { "path": "packages/providers" },
+    { "path": "packages/tools" },
+    { "path": "packages/embeddings" },
+    { "path": "packages/vectorstore" },
+    { "path": "packages/registry" },
+    { "path": "packages/examples" }
+  ]
+}

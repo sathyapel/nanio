@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../core" },
+    { "path": "../tools" },
+    { "path": "../providers" },
+    { "path": "../embeddings" },
+    { "path": "../vectorstore" },
+    { "path": "../observability" },
+    { "path": "../registry" }
+  ]
+}

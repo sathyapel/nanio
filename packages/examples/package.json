@@ -1,0 +1,19 @@
+{
+  "name": "@nanio/examples",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@nanio/core": "*",
+    "@nanio/tools": "*",
+    "@nanio/providers": "*",
+    "@nanio/embeddings": "*",
+    "@nanio/vectorstore": "*",
+    "@nanio/observability": "*",
+    "@nanio/registry": "*",
+    "dotenv": "^16.4.5"
+  }
+}
