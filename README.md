@@ -16,26 +16,37 @@ A production-grade, lightweight, modular TypeScript agentic framework featuring 
 
 ## 🚀 Getting Started
 
-### Installation
+### Installation from NPM
 
-Install dependencies at the root of the workspace:
-
-```bash
-npm install
-```
-
-### Build
-
-Compile all TypeScript packages:
+You can install the modular `@nanio` packages directly from the NPM registry using the `@alpha` tag:
 
 ```bash
-npm run build
+# Core package and observability layer
+npm install @nanio/core@alpha @nanio/observability@alpha
+
+# Provider clients, embeddings, and vector stores
+npm install @nanio/providers@alpha @nanio/embeddings@alpha @nanio/vectorstore@alpha
+
+# Registry and tools
+npm install @nanio/registry@alpha @nanio/tools@alpha
 ```
 
-### Run Demo
+### Local Workspace Development
 
-Run the integrated Postgres/Qdrant/Model verification example:
+If you are developing locally inside this monorepo:
 
-```bash
-node packages/examples/dist/main.js
-```
+1. Install dependencies at the root of the workspace:
+   ```bash
+   npm install
+   ```
+
+2. Compile all TypeScript packages:
+   ```bash
+   npm run build
+   ```
+
+3. Run the integrated Postgres/Qdrant/Model verification example:
+   ```bash
+   node packages/examples/dist/main.js
+   ```
+
