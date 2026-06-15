@@ -1,6 +1,7 @@
 {
   "name": "@nanio/observability",
-  "version": "0.0.1-alpha.2",
+  "version": "0.0.1-alpha.4",
+  "description": "Structured JSON logging, PII sanitization, context propagation, and cost budgets for Nanio (v0.0.1-alpha.4)",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -8,6 +9,6 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@nanio/core": "^0.0.1-alpha.2"
+    "@nanio/core": "^0.0.1-alpha.4"
   }
 }

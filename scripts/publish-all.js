@@ -52,6 +52,11 @@ function bumpVersions(newVersion) {
     
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     pkg.version = newVersion;
+
+    // Update package description to match new version suffix (v0.0.1-alpha.X)
+    if (pkg.description) {
+      pkg.description = pkg.description.replace(/\(v\d+\.\d+\.\d+-alpha\.\d+\)/, `(v${newVersion})`);
+    }
     
     // Update internal dependencies starting with @nanio/
     if (pkg.dependencies) {

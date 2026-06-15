@@ -9,10 +9,11 @@ const packages = [
   'packages/registry',
   'packages/vectorstore',
   'packages/providers',
+  'packages/ihr',
   'packages/examples'
 ];
 
-const newVersion = '0.0.1-alpha.1';
+const newVersion = '0.0.1-alpha.2';
 
 for (const pkg of packages) {
   const pjsonPath = path.join(pkg, 'package.json');

@@ -1,6 +1,7 @@
 {
   "name": "@nanio/providers",
-  "version": "0.0.1-alpha.2",
+  "version": "0.0.1-alpha.4",
+  "description": "Resilient LLM/image API clients for Gemini, OpenAI, Claude, and xAI with rate limiters (v0.0.1-alpha.4)",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -8,7 +9,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@nanio/core": "^0.0.1-alpha.2",
-    "@nanio/observability": "^0.0.1-alpha.2"
+    "@nanio/core": "^0.0.1-alpha.4",
+    "@nanio/observability": "^0.0.1-alpha.4"
   }
 }

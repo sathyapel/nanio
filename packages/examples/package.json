@@ -1,6 +1,7 @@
 {
   "name": "@nanio/examples",
-  "version": "0.0.1-alpha.2",
+  "version": "0.0.1-alpha.4",
+  "description": "Examples demonstrating the usage of Nanio agentic framework packages (v0.0.1-alpha.4)",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -8,14 +9,14 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@nanio/core": "^0.0.1-alpha.2",
-    "@nanio/tools": "^0.0.1-alpha.2",
-    "@nanio/providers": "^0.0.1-alpha.2",
-    "@nanio/embeddings": "^0.0.1-alpha.2",
-    "@nanio/vectorstore": "^0.0.1-alpha.2",
-    "@nanio/observability": "^0.0.1-alpha.2",
-    "@nanio/registry": "^0.0.1-alpha.2",
-    "@nanio/ihr": "^0.0.1-alpha.2",
+    "@nanio/core": "^0.0.1-alpha.4",
+    "@nanio/tools": "^0.0.1-alpha.4",
+    "@nanio/providers": "^0.0.1-alpha.4",
+    "@nanio/embeddings": "^0.0.1-alpha.4",
+    "@nanio/vectorstore": "^0.0.1-alpha.4",
+    "@nanio/observability": "^0.0.1-alpha.4",
+    "@nanio/registry": "^0.0.1-alpha.4",
+    "@nanio/ihr": "^0.0.1-alpha.4",
     "dotenv": "^16.4.5"
   }
 }

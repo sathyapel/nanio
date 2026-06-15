@@ -1,6 +1,8 @@
 {
   "name": "nanio-monorepo",
+  "version": "0.0.1-alpha.4",
   "private": true,
+  "description": "Production-grade, lightweight, and modular TypeScript agentic framework (v0.0.1-alpha.2)",
   "type": "module",
   "workspaces": [
     "packages/*"
@@ -15,6 +17,5 @@
     "@types/node": "^20.12.12",
     "mongodb": "^6.5.0",
     "ioredis": "^5.4.1"
-  },
-  "version": "0.0.1-alpha.2"
+  }
 }
